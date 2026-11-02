@@ -82,6 +82,7 @@
     <string name="action_change_method">Change method</string>
     <string name="action_copy">Copy</string>
     <string name="action_export">Export</string>
+    <string name="action_share">Share</string>
     <string name="log_exported">Log exported</string>
     <string name="log_export_failed">Export failed</string>
     <string name="log_copied">Log copied</string>

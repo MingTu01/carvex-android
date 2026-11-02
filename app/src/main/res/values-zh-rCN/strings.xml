@@ -80,6 +80,7 @@
     <string name="action_change_method">更改连接方式</string>
     <string name="action_copy">复制</string>
     <string name="action_export">导出</string>
+    <string name="action_share">分享</string>
     <string name="log_exported">日志已导出</string>
     <string name="log_export_failed">导出失败</string>
     <string name="log_copied">日志已复制</string>

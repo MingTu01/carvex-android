@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只开放 cache/logs 一处：日志分享出去的临时副本，不给整个 cache 目录。 -->
+<paths>
+    <cache-path
+        name="logs"
+        path="logs/" />
+</paths>

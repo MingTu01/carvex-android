@@ -8,6 +8,7 @@ import io.github.iamr0s.carvex.ui.theme.ExtraColors
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -56,6 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import io.github.iamr0s.carvex.ui.model.DeviceViewModel
 import io.github.iamr0s.carvex.ui.model.LogGroup
 import io.github.iamr0s.carvex.ui.model.UiState
@@ -66,6 +69,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+/** 每次导出的文件名都带本地时间，避免同一个 device-log.txt 被下一次导出覆盖。 */
+private fun logFileName(): String =
+    "carvex-log-" + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date()) + ".txt"
 
 @Composable
 fun LogPage(
@@ -80,6 +91,7 @@ fun LogPage(
     val exportedMessage = stringResource(R.string.log_exported)
     val exportFailedMessage = stringResource(R.string.log_export_failed)
     val copiedMessage = stringResource(R.string.log_copied)
+    val shareLabel = stringResource(R.string.action_share)
     val x = AppColors.extra
     val safe = LocalAppInsets.current.content.toPaddingValues()
     val direction = LocalLayoutDirection.current
@@ -103,6 +115,37 @@ fun LogPage(
                 } catch (_: Exception) {
                     vm.say(exportFailedMessage)
                 }
+            }
+        }
+    }
+
+    /** 分享：把日志写成 cache/logs 下的临时副本，直接用系统分享面板发出去，不用先进文件管理器找。 */
+    fun shareLog() {
+        scope.launch {
+            try {
+                val name = logFileName()
+                val text = vm.logText()
+                val uri = withContext(Dispatchers.IO) {
+                    val dir = File(context.cacheDir, "logs").apply { mkdirs() }
+                    // 只留本次这一份：旧副本没有保留价值，也不该一直占着 cache。
+                    dir.listFiles()?.forEach { old -> runCatching { old.delete() } }
+                    val file = File(dir, name)
+                    file.writeText(text)
+                    FileProvider.getUriForFile(context, context.packageName + ".fileprovider", file)
+                }
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, name)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(
+                    Intent.createChooser(send, shareLabel).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                vm.say(exportFailedMessage)
             }
         }
     }
@@ -136,10 +179,17 @@ fun LogPage(
                 )
             }
             Spacer(Modifier.width(8.dp))
-            IconButton(onClick = { export.launch("device-log.txt") }) {
+            IconButton(onClick = { export.launch(logFileName()) }) {
                 Icon(
                     Icons.Default.FileDownload,
                     contentDescription = stringResource(R.string.action_export),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            IconButton(onClick = { shareLog() }) {
+                Icon(
+                    Icons.Default.Share,
+                    contentDescription = shareLabel,
                 )
             }
         }
