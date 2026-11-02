@@ -153,7 +153,12 @@ class VideoEncoder(val width:Int,val height:Int,fps:Int,bitrate:Int,hostFormat:B
         // Only built on request: the front surface is what lets a still picture be resubmitted, but it
         // also costs a full-screen blit per frame and a few frames of added latency, and a source that
         // repaints on request needs neither.
-        front=if(frontSurface)EncoderFrontSurface.create(width,height,codecSurface){message->diagnostic(message,1)} else null
+        front=if(frontSurface)EncoderFrontSurface.create(width,height,codecSurface){message->
+            // 前置画布把"源提交了多少帧"用 source-frames=N 报上来，单独映射成一条可读日志：
+            // 有心跳但源一直是 0，说明宿主根本没画，问题不在我们这一侧。
+            if(message.startsWith("source-frames="))diagnostic("front-source",message.removePrefix("source-frames=").toLongOrNull()?:0L)
+            else diagnostic(message,1)
+        } else null
         front?.setMinInterval(1_000_000_000L/fps)
         surface=front?.surface?:codecSurface
     }

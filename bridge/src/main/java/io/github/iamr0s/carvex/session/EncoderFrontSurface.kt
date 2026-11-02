@@ -46,6 +46,8 @@ class EncoderFrontSurface private constructor(
     val surface:Surface=Surface(texture)
     private val pending=AtomicBoolean(false)
     private val fresh=AtomicBoolean(false)
+    /** 画面源提交的帧数（不含 repeat）。用来区分"宿主没画"和"我们没转发"。 */
+    private val sourceFrames=java.util.concurrent.atomic.AtomicLong()
     private val closed=AtomicBoolean(false)
     private val drawFailure=AtomicBoolean(false)
     private val transform=FloatArray(16)
@@ -243,6 +245,10 @@ class EncoderFrontSurface private constructor(
 
     private fun markFresh(){
         fresh.set(true)
+        // 只数"画面源真的提交了几帧"：这是判定 CarWith 到底有没有在画的唯一证据。
+        // repeat() 走的是另一条路，不计入这里，所以这个数就是宿主实际提交的次数。
+        val n=sourceFrames.incrementAndGet()
+        if(n==1L||n%300==0L)log("source-frames="+n)
         // A repeat request is never throttled - it happens once a second and is what keeps a still
         // picture alive. Real submissions are: one arriving faster than the requested rate is consumed
         // without being drawn, so the encoder is fed no more frames than the rate allows.

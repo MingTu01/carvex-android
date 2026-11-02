@@ -791,6 +791,7 @@ class SessionController(
                     "front-surface-off"->BridgeStore.log(id,"encoder front surface not established; frame source feeds the encoder directly")
                     "front-surface-rejected"->BridgeStore.log(id,"device refused the encoder front surface; frame source feeds the encoder directly")
                     "front-surface-draw-failed"->BridgeStore.log(id,"drawing into the encoder front surface failed; stopped repeating the log")
+                    "front-source"->BridgeStore.log(id,"encoder front surface received "+value+" frame(s) from the picture source; this counts what the host actually drew, repeats excluded")
                     else->VideoDiagnosticLog.message(name,value)?.let{BridgeStore.log(id,it)}
                 }},stopSend={air.closeVideo()},
                     // Opt-in latency trade: the front surface is the only way a still CarWith picture
