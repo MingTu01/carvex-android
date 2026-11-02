@@ -1,6 +1,7 @@
 package io.github.iamr0s.carvex.carplay.core
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import javax.crypto.Cipher
 
 /** Recovered HomeKit MainAudio PCM profile; not all AirPlay audio transports. */
 object MediaAudioPackets {
@@ -24,6 +25,26 @@ object MediaAudioPackets {
             .putShort(sequence.toShort()).putInt(timestamp.toInt()).putInt(0).array()
         val iv=Crypto.nonce(nonce)
         return header+Crypto.seal(key,iv,payload,header.copyOfRange(4,12))+iv.copyOfRange(4,12)
+    }
+    /** MFi/SAP 音频记录：同一套头部 + AES-CTR，替换掉 HomeKit 的 ChaCha20-Poly1305。
+     *
+     *  头部逐字节沿用上面 [accessUnit] 的形状：`0x80` + PT + 10 字节音频消息
+     *  （seq BE16 / timestamp BE32 / 第二字段 BE32，见音频 spec R-2.6）。密文只覆盖 payload。
+     *  差别只有密码学：CTR 等长、没有 16 字节 tag、也没有尾部 8 字节 nonce
+     *  （06-frame-crypto-aes R-6.1）。
+     *
+     *  边界要说清：MFi 音频的线上 profile 没有抓包证据（本 docset 的 U-7 / C10 SKIP），
+     *  这里只做了“头部不变、密码学换成 MFi 流密钥”这一处最小改动，没有新增头部字段，
+     *  也没有假定 tag/nonce 存在。真机不接受时，第一步该看的不是公式，而是这里的选择。
+     */
+    fun sapPacket(payload:ByteArray,cipher:Cipher,sequence:Int,timestamp:Long,type:Int):ByteArray {
+        require(type in setOf(100,101,102))
+        require(sequence in 0..65535&&payload.isNotEmpty()&&payload.size<=1400)
+        val pt=wireType(type)
+        val header=ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN).put(0x80.toByte()).put(pt.toByte())
+            .putShort(sequence.toShort()).putInt(timestamp.toInt()).putInt(0).array()
+        // 计数器由调用方持有的同一个 Cipher 推进：跨包连续，不在这里重置。
+        return header+cipher.update(payload)
     }
     /** RED 外层 PT：main→104、alt→105、gen→97（ch08 §3.3）。 */
     /** RED 后的 PT：只有 100/101/106 有映射（`X-0030`；Toyota 表 {104,105,—,—,—,—,108,109} 一致）。 */

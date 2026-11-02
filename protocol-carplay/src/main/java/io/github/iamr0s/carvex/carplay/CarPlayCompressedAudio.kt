@@ -8,13 +8,16 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import java.net.*
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.crypto.Cipher
 
-/** Actual HomeKit Main/Alt compressed sender, anchored to receiver v280.33.8 raw-AU contract. */
+/** Actual HomeKit Main/Alt compressed sender, anchored to receiver v280.33.8 raw-AU contract.
+ *  [sapCipher] 非空时切换到 MFi/SAP 路线：同一套 12 字节头 + AES-CTR（等长、无 tag、无 nonce 尾），
+ *  计数器由该 Cipher 自带并跨包连续。HAP 路线传 null，行为与此前完全一致。 */
 class CarPlayCompressedAudio private constructor(private val socket:DatagramSocket,private val peer:InetAddress,
     private val port:Int,private val category:Int,private val streamType:Int,private val selected:CarPlayAudioPlan.Format,
     private val key:ByteArray,private val retransmit:AudioRtpRetransmit?,private val ownership:suspend ()->Unit,private val stopped:()->Unit,
     private val log:(String)->Unit,private val redEnabled:Boolean,
-    private val canSend:()->Boolean,receiverHighAccuracyTimestamps:Boolean):NegotiatedAudioTransport {
+    private val canSend:()->Boolean,private val sapCipher:Cipher?,receiverHighAccuracyTimestamps:Boolean):NegotiatedAudioTransport {
     private val closed=AtomicBoolean(false)
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val output=Channel<CompressedAudioEncoder.Event>(8)
@@ -42,6 +45,8 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
         log("Audio RTP clock category="+category+" type="+streamType+
             " peerHighAccuracy="+receiverHighAccuracyTimestamps+" timestampMode="+rtpClock.mode.diagnosticName+
             "; source pacing independent; high-accuracy network-clock anchors not implemented")
+        if(sapCipher!=null)log("Audio crypto category="+category+" mode=AES-CTR(MFi/SAP) redEnabled="+redEnabled+
+            " payloadOnly=true tagBytes=0 nonceTail=0; MFi audio wire profile has no packet-capture evidence")
     }
     private fun failed(t:Throwable){
         if(closed.get())return
@@ -109,8 +114,15 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
                         // Keep source gaps for pacing/staleness/RED, but select wire timestamps
                         // from the SETUP reply. No unsent AU consumes the continuous RTP clock.
                         val timestamp=rtpClock.timestamp(plan.timestamp)
-                        check(nonce<Long.MAX_VALUE){"Audio nonce exhausted"}
-                        val packet=redDiagnostic.packet(event.bytes,history,historyTimestamp,key,sequence,timestamp,nonce++,streamType)
+                        val packet=if(sapCipher!=null){
+                            // CTR 没有 tag/nonce，ChaCha 的 nonce 计数在这里没有意义；
+                            // 计数器由 sapCipher 自己推进，不需要每包换 IV。
+                            check(!redEnabled){"SAP audio has no RED record implementation"}
+                            MediaAudioPackets.sapPacket(event.bytes,sapCipher,sequence,timestamp,streamType)
+                        }else{
+                            check(nonce<Long.MAX_VALUE){"Audio nonce exhausted"}
+                            redDiagnostic.packet(event.bytes,history,historyTimestamp,key,sequence,timestamp,nonce++,streamType)
+                        }
                         val packetSequence=sequence
                         val writeBegan=System.nanoTime()
                         socket.send(DatagramPacket(packet,packet.size,peer,port))
@@ -119,7 +131,9 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
                         if(redEnabled){history=event.bytes;historyTimestamp=timestamp}
                         retransmit?.record(packetSequence,packet)
                         maximumWriteNanos=maxOf(maximumWriteNanos,lastSentNanos-writeBegan)
-                        packetDiagnostics.sent(packet,event.bytes,samples,lastSentNanos)?.let{
+                        // 该诊断要求包长 ≥ 12+24（含 16B tag 与 8B nonce 尾），CTR 记录达不到，
+                        // 强行调用会抛 IllegalArgumentException 把整路音频关掉。
+                        if(sapCipher==null)packetDiagnostics.sent(packet,event.bytes,samples,lastSentNanos)?.let{
                             log("Audio packet category="+category+" "+it.summary())
                         }
                         timing(lastSentNanos)
@@ -145,9 +159,9 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
         suspend fun create(socket:DatagramSocket,peer:InetAddress,port:Int,category:Int,type:Int,
             format:CarPlayAudioPlan.Format,key:ByteArray,retransmit:AudioRtpRetransmit?,ownership:suspend ()->Unit,stopped:()->Unit,
             log:(String)->Unit,canSend:()->Boolean={true},redEnabled:Boolean=false,
-            receiverHighAccuracyTimestamps:Boolean=false):CarPlayCompressedAudio {
+            receiverHighAccuracyTimestamps:Boolean=false,sapCipher:Cipher?=null):CarPlayCompressedAudio {
             require(format.codec in setOf(CarPlayAudioPlan.Codec.AAC_LC,CarPlayAudioPlan.Codec.AAC_ELD,CarPlayAudioPlan.Codec.OPUS))
-            val transport=CarPlayCompressedAudio(socket,peer,port,category,type,format,key,retransmit,ownership,stopped,log,redEnabled,canSend,receiverHighAccuracyTimestamps)
+            val transport=CarPlayCompressedAudio(socket,peer,port,category,type,format,key,retransmit,ownership,stopped,log,redEnabled,canSend,sapCipher,receiverHighAccuracyTimestamps)
             val bitrate=when(format.codec){CarPlayAudioPlan.Codec.AAC_LC->192000;CarPlayAudioPlan.Codec.AAC_ELD->if(format.rate<=24000)48000 else 96000;else->if(format.rate<=24000)48000 else 96000}
             try{
                 log("Audio RED diagnostic category="+category+" codec="+format.codec+" negotiatedRED="+redEnabled+

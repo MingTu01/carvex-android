@@ -107,4 +107,47 @@ class MediaAudioPacketsTest {
         val zero=MediaAudioPackets.redPacket(byteArrayOf(2),byteArrayOf(1),10L,ByteArray(32),7,10,9,101)
         assertEquals(0,redDelta(zero))
     }
+    /** MFi/SAP 的流密钥：与 AccessoryAuth.Mfi.streamCipher 同一公式
+     *  （SHA512("AirPlayStreamKey"‖dec(id)‖K)[0:16]，04-kdf / A-46）。 */
+    private fun sapCipher(id:Long,material:ByteArray,mode:Int)=javax.crypto.Cipher
+        .getInstance("AES/CTR/NoPadding").apply{
+            fun derive(label:String)=Crypto.hash((label+id).toByteArray(Charsets.US_ASCII),material).copyOf(16)
+            init(mode,javax.crypto.spec.SecretKeySpec(derive("AirPlayStreamKey"),"AES"),
+                javax.crypto.spec.IvParameterSpec(derive("AirPlayStreamIV")))
+        }
+    @Test fun sapPacketKeepsTheHomeKitHeaderAndAddsNoTagOrNonceTail(){
+        val material=ByteArray(16){it.toByte()}
+        val payload=byteArrayOf(1,2,3,4)
+        val sap=MediaAudioPackets.sapPacket(payload,sapCipher(7,material,javax.crypto.Cipher.ENCRYPT_MODE),
+            9,0x11223344L,100)
+        val hap=MediaAudioPackets.packet(payload,ByteArray(32),9,0x11223344L,0,100)
+        // 两条路线共用同一套头：换的只是密码学，不是封装。
+        assertArrayEquals(hap.copyOfRange(0,12),sap.copyOfRange(0,12))
+        assertEquals(100,sap[1].toInt() and 127)
+        // CTR 等长：12B 头 + 原长正文，没有 16B tag，也没有 8B nonce 尾。
+        assertEquals(12+payload.size,sap.size)
+        assertEquals(12+payload.size+16+8,hap.size)
+    }
+    @Test fun sapPacketRunsOneContinuousCounterAcrossPackets(){
+        val material=ByteArray(16){it.toByte()}
+        val sender=sapCipher(7,material,javax.crypto.Cipher.ENCRYPT_MODE)
+        val same=byteArrayOf(9,9,9,9)
+        val first=MediaAudioPackets.sapPacket(same,sender,1,100L,100)
+        val second=MediaAudioPackets.sapPacket(same,sender,2,101L,100)
+        // 同明文、不同包 → 密文必须不同，说明计数器在推进而不是每包重置。
+        assertFalse(first.copyOfRange(12,first.size).contentEquals(second.copyOfRange(12,second.size)))
+        // 接收端用同一个上下文顺序解，两包都要还原。CTR 的“连续”是双向约定。
+        val receiver=sapCipher(7,material,javax.crypto.Cipher.DECRYPT_MODE)
+        assertArrayEquals(same,receiver.update(first.copyOfRange(12,first.size)))
+        assertArrayEquals(same,receiver.update(second.copyOfRange(12,second.size)))
+    }
+    @Test fun sapPacketRejectsUnknownTypesAndOversizedPayload(){
+        val cipher=sapCipher(7,ByteArray(16),javax.crypto.Cipher.ENCRYPT_MODE)
+        assertThrows(IllegalArgumentException::class.java){
+            MediaAudioPackets.sapPacket(byteArrayOf(1,2),cipher,0,0,106)}
+        assertThrows(IllegalArgumentException::class.java){
+            MediaAudioPackets.sapPacket(ByteArray(1401),cipher,0,0,100)}
+        assertThrows(IllegalArgumentException::class.java){
+            MediaAudioPackets.sapPacket(byteArrayOf(),cipher,0,0,100)}
+    }
 }

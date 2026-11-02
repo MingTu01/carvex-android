@@ -1040,11 +1040,25 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                 " selected="+route.type+"/"+route.purpose+
                 (if(route.type==100)" (media fell back to type100; receiver may classify by type)" else ""))
         }
-        val secret=shared?:throw UnsupportedOperationException("Audio RTP profile requires HomeKit; MFiSAP audio is not established")
         val control=client?:error("No control session")
         val format=candidate.decodedPcm
-        val duplex=wantsInput&&CarPlayAudioPlan.duplexSupported(receiverAudio,route,candidate)
         val id=Crypto.random.nextLong().and(Long.MAX_VALUE).coerceAtLeast(1)
+        // 先固定下来：`shared` 是可变的类属性，Kotlin 不对它做智能转换。
+        val homeKitSecret=shared
+        // MFi/SAP 路线没有 HomeKit 的 shared secret，但屏幕流已经证明这条路的 KDF 可用：
+        // SHA512("AirPlayStreamKey"‖dec(id)‖K)[0:16]（04-kdf，A-46）。
+        // 音频沿用同一公式，按流 id 各建一个 AES-CTR 上下文；计数器必须跨包连续，
+        // 不能每包重建（06-frame-crypto-aes R-6.1）。HAP 路线仍走原来的 HKDF，行为不变。
+        val sapAudio=if(homeKitSecret==null)mfi?.streamCipher(id)else null
+        if(homeKitSecret==null&&sapAudio==null)
+            throw UnsupportedOperationException("Audio RTP profile requires HomeKit or MFi/SAP key material")
+        val key=if(homeKitSecret!=null)Crypto.hkdf(homeKitSecret,"DataStream-Salt$id","DataStream-Output-Encryption-Key")
+            else ByteArray(0)
+        // 麦克风只有 HomeKit 的输入密钥方向实现了。SAP 下不声明 input：宁可少一路麦克风，
+        // 也不发一个用错密钥的 dataPort 去换回车机侧的静默失败。
+        val duplex=homeKitSecret!=null&&wantsInput&&CarPlayAudioPlan.duplexSupported(receiverAudio,route,candidate)
+        if(wantsInput&&!duplex)
+            log("Audio category="+category+" microphone not offered: MFi/SAP input key direction is not implemented")
         val streamKey=audioKey(route.type,route.purpose)
         val udp=DatagramSocket(null)
         val rtcp=try{DatagramSocket(null)}catch(t:Throwable){udp.close();throw t}
@@ -1097,9 +1111,10 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             val localAddress=requireNotNull(localMediaAddress)
             udp.bind(InetSocketAddress(localAddress,0));rtcp.bind(InetSocketAddress(localAddress,0))
             val retransmit=AudioRtpRetransmit(rtcp,address,log)
-            val key=Crypto.hkdf(secret,"DataStream-Salt$id","DataStream-Output-Encryption-Key")
             // Prepare the real input socket/decoder before advertising input=true.
+            // duplex 在 SAP 下恒为 false，所以这里的 secret 只会在 HAP 路线被解引用。
             if(duplex){
+                val secret=requireNotNull(shared){"Microphone path requires a HomeKit shared secret"}
                 microphone=CarPlayMicReceiver.create(udp,address,0,
                     key=Crypto.hkdf(secret,"DataStream-Salt$id","DataStream-Input-Encryption-Key"),
                     alternateKey=key,format=candidate,controlPort=null,
@@ -1108,7 +1123,9 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             }
             // Offer the implemented route capability, without a diagnostic override.
             // Writers receive only the validated result, never a second local override.
-            val offeredRed=AudioRedundancyPolicy.offerFor(route)
+            // SAP 只实现了“主块 + CTR”，RED 的历史块封装还是 AEAD 那一套。
+            // 不提供做不到的能力，比协商成功后再让接收端拿到解不开的冗余块要好。
+            val offeredRed=if(sapAudio!=null)false else AudioRedundancyPolicy.offerFor(route)
             val description=AudioSetupDescription.playback(route,candidate,id,rtcp.localPort,
                 inputPort=udp.localPort.takeIf{duplex},offerRedundancy=offeredRed)
             log("Audio latency category="+category+" requestedMs="+description["audioLatencyMs"]+
@@ -1169,13 +1186,18 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                     scope.launch{finishClose(needsTeardown=true)}
                 }
             }
-            val transport=if(candidate.codec==CarPlayAudioPlan.Codec.PCM16)
+            val transport=if(candidate.codec==CarPlayAudioPlan.Codec.PCM16){
+                // SAP 只实现了压缩音频（AAC）的 CTR 封装。PCM 分支还没接 CTR，
+                // 明确失败而不是退回明文或错密钥，免得给车机送一包解不开的东西。
+                if(sapAudio!=null)throw UnsupportedOperationException(
+                    "SAP audio: PCM16 output path is not implemented; the receiver must offer a compressed media format")
                 CarPlayMediaAudio(udp,address,port,format,category,route.type,key,retransmit,takeOwnership,releaseStream,log,redEnabled,
                     canSend={!stopping&&(category==2||audioOwnership.allowsMainSend())},
                     receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps)
+            }
             else CarPlayCompressedAudio.create(udp,address,port,category,route.type,candidate,key,retransmit,takeOwnership,releaseStream,log,
                 canSend={!stopping&&(category==2||audioOwnership.allowsMainSend())},redEnabled=redEnabled,
-                receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps)
+                receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps,sapCipher=sapAudio)
             transportRef.set(transport)
             val combined=microphone?.let{DuplexAudioTransport(transport,it)}?:transport
             audioTransports[category]=transport

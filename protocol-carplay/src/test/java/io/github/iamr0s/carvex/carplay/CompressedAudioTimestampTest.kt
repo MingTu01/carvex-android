@@ -71,10 +71,11 @@ class CompressedAudioTimestampTest {
                 logs.trySend(line);Unit
             }
             // Bypass only MediaCodec creation, not packetization, pacing, gates or UDP sends.
-            val constructor=CarPlayCompressedAudio::class.java.declaredConstructors.single{it.parameterCount==14}
+            // 15 个参数：新增的 sapCipher 传 null，本组用例走 HomeKit 路线。
+            val constructor=CarPlayCompressedAudio::class.java.declaredConstructors.single{it.parameterCount==15}
             constructor.isAccessible=true
             audio=constructor.newInstance(socket,peer,12345,category,type,format,key,retransmit,
-                ownership,onStopped,logger,red,canSend,highAccuracy) as CarPlayCompressedAudio
+                ownership,onStopped,logger,red,canSend,null,highAccuracy) as CarPlayCompressedAudio
             @Suppress("UNCHECKED_CAST")
             output=field(audio,"output") as Channel<CompressedAudioEncoder.Event>
             CarPlayCompressedAudio::class.java.getDeclaredMethod("startWriter").also{
