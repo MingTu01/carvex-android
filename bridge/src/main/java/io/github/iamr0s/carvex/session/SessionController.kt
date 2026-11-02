@@ -820,18 +820,26 @@ class SessionController(
                     // report the real reason now instead of waiting for the first-frame deadline.
                     error("本地画面不可用：无法创建私有虚拟屏，请查看日志中的 Local display unavailable")
                 }
+                // 这块 surface 同一时刻只能挂一块虚拟屏。下面的顺序是实车对照出来的，别调换。
+                var localPage=local
                 if(hostOwnsDisplay){
                     // The host renders into whatever surface it is handed and never repaints on its own,
                     // so it renders into the encoder's front surface: that is the only way a still host
                     // picture gets back into the encoder.
                     BridgeStore.log(id,if(o.frontSurface)"CarWith host owns the frame source; still pictures are resent via the encoder front surface" else "CarWith host owns the frame source; front surface disabled, so no P frames while still (latency first)")
+                    // 顺序：先放掉我们自己的虚拟屏，**再**把 surface 交给宿主。
+                    // 实车对照（2026-11-02）：旧代码就是这个顺序（close → prepareCast），
+                    // 画面正常、video 一路涨到 18312；改成"先 prepareCast、等 onCastPrepared 再 close"
+                    // 之后，宿主照样回 displayId、我们也照样撤页，可它一帧都不再往这块 surface 上合成，
+                    // 车机上只剩镜头前那一帧 splash（用户看到的就是"卡在 CarWith 图标"）。
+                    // 两块 VirtualDisplay 同时挂同一块 surface，SurfaceFlinger 侧那块 BufferQueue
+                    // 会被先来的那块占着，后来的宿主出图直接哑掉，且应用层看不到任何错误。
+                    runCatching{localPage?.close()}
+                    localPage=null
                     val handed=runCatching{h.surface(v.surface,hostWidth,hostHeight,o.dpi)}.isSuccess
                     // prepareCast 是同步调用，宿主随后用 onCastPrepared(displayId) 回话。
-                    // 只在它真的回了之后才撤掉本地页：既避免和宿主抢同一块 surface，
-                    // 也避免它其实没接时把画面弄成黑屏。
                     val prepared=handed&&withTimeoutOrNull(3000){hostDisplayReady.await()}!=null
                     if(prepared){
-                        runCatching{local?.close()}
                         BridgeStore.log(id,"Host prepared a cast display; the app-owned page is released")
                     }else{
                         // 绑定成功但宿主没接管：把它自己的界面带到前台，再请求一次。
@@ -842,23 +850,29 @@ class SessionController(
                                 withTimeoutOrNull(5000){hostDisplayReady.await()}!=null
                         }else false
                         if(retried){
-                            runCatching{local?.close()}
                             BridgeStore.log(id,"Host prepared a cast display after being brought to the foreground; the app-owned page is released")
                         }else{
                             hostOwnsDisplay=false
                             BridgeStore.log(id,"Host never called onCastPrepared (handed="+handed+" foreground="+foreground+
                                 "); falling back to the app-owned page")
+                            // 本地页在上面的顺序里已经放掉了，宿主要是不接就得重建，
+                            // 否则这条会话根本没有画面源。
+                            localPage=openLocalVideoContent(id,v.surface,hostWidth,hostHeight,fps)
+                            BridgeStore.log(id,if(localPage!=null)
+                                "App-owned page rebuilt on the same surface after the host declined it"
+                             else "App-owned page could not be rebuilt; this session has no picture source")
                         }
                     }
                 }
-                if(!hostOwnsDisplay&&local!=null){
+                if(!hostOwnsDisplay&&localPage!=null){
                     // No host takes the surface, so the app-owned page stays for the whole session.
-                    r.own(local);local.show(LocalVideoPhase.SCREEN)
+                    val page=localPage
+                    r.own(page);page.show(LocalVideoPhase.SCREEN)
                     // 画面留在这里，触摸的落点也登记上：宿主没人接时事件会落到这张页面上。
-                    localContentRef.set(local)
+                    localContentRef.set(page)
                     // This page repaints on request, which is exactly what keeps the media stream
                     // alive while it stays still - and it never needed a front surface for that.
-                    v.repeatFrame={local.heartbeat()}
+                    v.repeatFrame={page.heartbeat()}
                 }
                 // Both paths own the encoder surface at this point, so both must advance the stage;
                 // previously only the host path did, which left sessions without CarWith stuck on SETUP.
