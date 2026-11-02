@@ -124,15 +124,22 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
                         // Keep source gaps for pacing/staleness/RED, but select wire timestamps
                         // from the SETUP reply. No unsent AU consumes the continuous RTP clock.
                         val timestamp=rtpClock.timestamp(plan.timestamp)
+                        // AAC 需要 ADTS 帧封装：MediaCodec 出的是 raw AU，CarPlay 车机端
+                        // 的 AAC 解码器可能只认 ADTS 同步字（0xFFF1）。raw-AU 假设来自
+                        // HomeKit 接收端，未经 CarPlay 实证——如果车机要 ADTS，怎么都哑。
+                        val framed=if(selected.codec in setOf(CarPlayAudioPlan.Codec.AAC_LC,CarPlayAudioPlan.Codec.AAC_ELD)){
+                            MediaAudioPackets.adtsFrame(event.bytes,selected.rate,selected.channels,
+                                if(selected.codec==CarPlayAudioPlan.Codec.AAC_ELD)39 else 1)
+                        }else event.bytes
                         val packet=if(sapCrypto!=null){
                             // 两种帧密码都等长、无 tag、无 nonce 尾，所以 12 字节头之后只跟正文。
                             // CTR 的计数器由 sapCrypto 里的 Cipher 跨包连续推进；CBC-frame 反过来，
                             // 每个 AU 都用同一个初始 IV 重置（A-40），互不链接。IV 演进在 SapAudioCrypto 里。
                             check(!redEnabled){"SAP audio has no RED record implementation"}
-                            MediaAudioPackets.sapPacket(event.bytes,sapCrypto,sequence,timestamp,streamType,wirePtOverride)
+                            MediaAudioPackets.sapPacket(framed,sapCrypto,sequence,timestamp,streamType,wirePtOverride)
                         }else{
                             check(nonce<Long.MAX_VALUE){"Audio nonce exhausted"}
-                            redDiagnostic.packet(event.bytes,history,historyTimestamp,key,sequence,timestamp,nonce++,streamType)
+                            redDiagnostic.packet(framed,history,historyTimestamp,key,sequence,timestamp,nonce++,streamType)
                         }
                         val packetSequence=sequence
                         // 首包把线上字节钉进日志：12 字节头 + 正文起始。
@@ -148,12 +155,12 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
                         socket.send(DatagramPacket(packet,packet.size,peer,port))
                         rtpClock.sent(samples)
                         sequence=(sequence+1) and 65535;packets++;lastSentNanos=System.nanoTime()
-                        if(redEnabled){history=event.bytes;historyTimestamp=timestamp}
+                        if(redEnabled){history=framed;historyTimestamp=timestamp}
                         retransmit?.record(packetSequence,packet)
                         maximumWriteNanos=maxOf(maximumWriteNanos,lastSentNanos-writeBegan)
                         // 该诊断要求包长 ≥ 12+24（含 16B tag 与 8B nonce 尾），CTR 记录达不到，
                         // 强行调用会抛 IllegalArgumentException 把整路音频关掉。
-                        if(sapCrypto==null)packetDiagnostics.sent(packet,event.bytes,samples,lastSentNanos)?.let{
+                        if(sapCrypto==null)packetDiagnostics.sent(packet,framed,samples,lastSentNanos)?.let{
                             log("Audio packet category="+category+" "+it.summary())
                         }
                         timing(lastSentNanos)

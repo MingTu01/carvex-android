@@ -234,4 +234,31 @@ class MediaAudioPacketsTest {
         assertThrows(IllegalArgumentException::class.java){SapAudioCrypto.cbcFrame(ByteArray(16),ByteArray(24))}
         assertThrows(IllegalArgumentException::class.java){SapAudioCrypto.cbcFrame(ByteArray(0),ByteArray(16))}
     }
+
+    /** ADTS 帧封装：7 字节头 + raw AU；同步字 0xFFF1、帧长 = 7 + AU 大小。 */
+    @Test fun adtsFrameWrapsRawAuWithCorrectHeader(){
+        val rawAu=ByteArray(100){(it+1).toByte()}
+        val adts=MediaAudioPackets.adtsFrame(rawAu,48000,2)
+        assertEquals(107,adts.size)
+        // 同步字 + MPEG-4 + layer 0 + protection_absent=1
+        assertEquals(0xFF,adts[0].toInt() and 0xFF)
+        assertEquals(0xF1,adts[1].toInt() and 0xFF)
+        // AAC-LC(profile=1), 48kHz(idx=3), 2ch → byte2 = 0b01_0011_00 = 0x4C
+        assertEquals(0x4C,adts[2].toInt() and 0xFF)
+        // 帧长字段验证: (byte3&3)<<11 | byte4<<3 | byte5>>5 = 107
+        val frameLen=((adts[3].toInt() and 3) shl 11) or ((adts[4].toInt() and 0xFF) shl 3) or ((adts[5].toInt() and 0xFF) shr 5)
+        assertEquals(107,frameLen)
+        assertArrayEquals(rawAu,adts.copyOfRange(7,adts.size))
+    }
+
+    /** ADTS 头对不同采样率和声道数做正确映射。 */
+    @Test fun adtsFrameMapsSampleRateAndChannels(){
+        val rawAu=ByteArray(50)
+        // 44100Hz(idx=4), mono(ch=1) → byte2 = 0b01_0100_00 = 0x50
+        val mono=MediaAudioPackets.adtsFrame(rawAu,44100,1)
+        assertEquals(0x50,mono[2].toInt() and 0xFF)
+        // 16000Hz(idx=8), stereo(ch=2) → byte2 = 0b01_1000_00 = 0x60
+        val lowRate=MediaAudioPackets.adtsFrame(rawAu,16000,2)
+        assertEquals(0x60,lowRate[2].toInt() and 0xFF)
+    }
 }

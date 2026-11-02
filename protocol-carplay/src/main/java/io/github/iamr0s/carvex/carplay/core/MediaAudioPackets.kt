@@ -46,6 +46,48 @@ object MediaAudioPackets {
      *
      *  [wirePtOverride] 是真机逃生阀：只做一次 A/B 时传，不走规范映射。默认走 100。 */
     fun wirePayloadType(type:Int,wirePtOverride:Int?=null):Int=wirePtOverride?:if(type==102)100 else type
+    /** ADTS 帧封装：把 raw AAC AU 包上 7 字节 ADTS 头（无 CRC）。
+     *
+     *  MediaCodec 默认输出 raw AAC AU（不含 ADTS 头），但 CarPlay 车机端可能期望
+     *  ADTS 封装（HomeKit 的 raw-AU 假设未经 CarPlay 实证）。如果车机的 AAC 解码器
+     *  期待 ADTS 同步字（0xFFF1）而收到裸 AU，解码直接失败、全程无声。
+     *
+     *  ADTS 头格式（7 字节，protection_absent=1 即无 CRC）：
+     *  ```
+     *  Byte 0: 0xFF          sync word 高 8 位
+     *  Byte 1: 0xF1          sync 低 4 位 | ID=0(MPEG-4) | layer=00 | protection=1
+     *  Byte 2: profile(2) | sfreq_idx(4) | private(1) | ch_cfg 高 1 位
+     *  Byte 3: ch_cfg 低 2 位 | orig(1) | home(1) | copybits(2) | framelen 高 2 位
+     *  Byte 4: framelen 中 8 位
+     *  Byte 5: framelen 低 3 位 | fullness 高 5 位
+     *  Byte 6: fullness 低 6 位 | num_blocks(2)=0
+     *  ```
+     *
+     *  @param rawAu MediaCodec 输出的 raw AAC access unit
+     *  @param rate 采样率（用于查 ADTS sampling_frequency_index 表）
+     *  @param channels 声道数（1 或 2）
+     *  @param profile AAC profile：1=AAC-LC（默认），2=HE-AAC(v1)，39=AAC-ELD
+     */
+    fun adtsFrame(rawAu:ByteArray,rate:Int,channels:Int,profile:Int=1):ByteArray {
+        require(rawAu.isNotEmpty()){"Empty AAC AU cannot be ADTS-framed"}
+        val sfreqIdx=when(rate){
+            96000->0;88200->1;64000->2;48000->3;44100->4;32000->5;24000->6
+            22050->7;16000->8;12000->9;11025->10;8000->11;7350->12
+            else->error("Unsupported ADTS sample rate: "+rate)
+        }
+        require(channels in 1..2){"ADTS channel config supports 1-2, got "+channels}
+        val frameLen=7+rawAu.size
+        require(frameLen<=0x1FFF){"ADTS frame too long: "+frameLen}
+        val h=ByteArray(7)
+        h[0]=0xFF.toByte()
+        h[1]=0xF1.toByte() // MPEG-4, layer 0, protection_absent=1
+        h[2]=(((profile and 3) shl 6) or ((sfreqIdx and 0xF) shl 2) or ((channels shr 2) and 1)).toByte()
+        h[3]=(((channels and 3) shl 6) or ((frameLen shr 11) and 3)).toByte()
+        h[4]=((frameLen shr 3) and 0xFF).toByte()
+        h[5]=(((frameLen and 7) shl 5) or 0x1F).toByte() // buffer fullness=0x7FF (VBR)
+        h[6]=0xFC.toByte() // buffer fullness 低 6 位=0x3F, num_raw_blocks=0
+        return h+rawAu
+    }
     fun accessUnit(payload:ByteArray,key:ByteArray,sequence:Int,timestamp:Long,nonce:Long,type:Int,
                    wirePtOverride:Int?=null):ByteArray {
         require(type in setOf(100,101,102))
