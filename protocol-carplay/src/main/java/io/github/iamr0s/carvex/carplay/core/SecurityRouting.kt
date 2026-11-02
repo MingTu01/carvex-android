@@ -41,6 +41,11 @@ data class SecurityInputs(
     val peerHintPresent: Boolean = true, val record: PairRecordStatus = PairRecordStatus.ABSENT,
     val setupProviderBound: Boolean = false,
     val featureEvidence: AirPlayFeatureEvidence? = null,
+    /** Off by default. When the receiver advertises MFi/SAP (`AES-128 MFi SAP v1`, feature 26) but
+     *  withholds the TXT `pk` that the CU gate requires, an experimental caller may fall back to the
+     *  `/auth-setup` route instead of failing as SECURITY_POLICY_UNRESOLVED. It never relaxes any
+     *  other gate and never applies outside the discovery entry. */
+    val sapFallbackAfterGate: Boolean = false,
 )
 
 /** Route is selected before record lookup; records never choose SAP vs paired. */
@@ -78,7 +83,14 @@ object SecurityRouter {
             if (capabilities.requiresUnsupportedCuEntry)
                 securityFailure(SecurityReason.PAIRING_MECHANISM_UNSUPPORTED)
             if (capabilities.directCoreUtilsPairing != true) false
-            else i.pairedCapabilityGate ?: securityFailure(SecurityReason.SECURITY_POLICY_UNRESOLVED)
+            else {
+                val gate = i.pairedCapabilityGate
+                // A receiver that announces F38 but withholds `pk` cannot be driven by the CU/HAP
+                // exchange at all. Falling back to `/auth-setup` is a different mechanism, not a
+                // weaker version of the same one, so it needs an explicit opt-in.
+                if (gate == null && i.sapFallbackAfterGate) return SecurityRoute.SAP
+                gate ?: securityFailure(SecurityReason.SECURITY_POLICY_UNRESOLVED)
+            }
         }
         return if (paired) SecurityRoute.PAIRED else SecurityRoute.SAP
     }

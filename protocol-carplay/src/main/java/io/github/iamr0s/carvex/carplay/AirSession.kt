@@ -473,12 +473,24 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             " featuresLow64="+(metadata.effectiveFeatures?.let{"0x"+it.toString(16)}?:"${"missing"}")+
             "${" services="}"+metadata.services.sorted().joinToString(",").ifEmpty{"${"none found"}"})
         events.requireCurrent()
+        // 车机只给 `features`、不给 TXT `pk` 时，CU/HAP 的 gate 必然为 null。但 features 里的
+        // AES-128 MFi SAP v1（位26）说明对端准备走 `/auth-setup`：那条路只要**对端自己的**证书
+        // 与公钥，不需要 Apple 私钥，所以这里在实验开关下给它一次机会，而不是直接判策略未决。
+        val sapFallback=options.experiment&&metadata.effectiveFeatureEvidence.has(26)==true
         val inputs=bootstrap.securityInputs(securityBinding,metadata,networkReady=true,endpointValidated=true,
             pairedCapabilityGate=pairedCapabilityGate,experimentalIntegrityOnly=options.experiment,
-            sourceContextCurrent=sourceContextCurrent())
+            sourceContextCurrent=sourceContextCurrent(),
+            sapFallbackAfterGate=sapFallback)
         log("iAP2 4301 peer declarations: "+(bootstrap.startSession?.startSessionPeerInfo?.toString()?:"unavailable")+
             "; preserved independently of Bonjour; no version-based authentication override")
         log("AirPlay security capabilities: "+AirPlaySecurityCapabilities(metadata.effectiveFeatures,metadata.effectiveFeatureEvidence).diagnostic())
+        // 路由一旦走向 PAIRED，唯一的门槛就是 ExperimentalHapDiscovery.gate；它拒绝时只回 null，
+        // 上层看到的是笼统的 SECURITY_POLICY_UNRESOLVED。这里把具体是哪一条没满足打出来。
+        log("Experimental HAP gate="+ExperimentalHapDiscovery.lastDecision+
+            " pi="+(metadata.pairingId?.length?.toString()?:"absent")+
+            " pk="+(metadata.publicKey?.size?.toString()?:"absent")+
+            " bonjour="+(metadata.endpoint?.hostAddress?:"none")+":"+(metadata.port?.toString()?:"-")+
+            " iap2="+(bootstrap.endpoint?.address?:"none")+":"+(bootstrap.endpoint?.port?.toString()?:"-"))
         val securityRoute=SecurityRouter.route(inputs)
         log("AirPlay security route="+securityRoute+" controlVersion="+inputs.controlVersion+
             " endpointSource="+inputs.endpointSource+" startReady="+inputs.startReady)
@@ -521,12 +533,23 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                 }
                 controlSiri.reset()
             }
-            SecurityRoute.SAP->Unit // This route does not query paired records.
+            SecurityRoute.SAP->{
+                // 这里原本是空的：SAP 被选中后 mfi 永远是 null，SETUP 也就永远没有 et/ekey/eiv。
+                // /auth-setup 的语义是"对端出示自己的 MFi 证书 + 用派生密钥包起来的签名"，手机侧
+                // 只做验证并自选媒体密钥，不需要任何 Apple 私钥材料。
+                if(options.experiment){
+                    log("MFi/SAP route selected; POST /auth-setup (this build has no FairPlay /fp-setup)")
+                    mfi=AccessoryAuth.mfi(c,AccessoryAuth.SapSignatureSchema.EXPERIMENTAL_RSA_PKCS1_SHA1_PUBLIC_KEYS_V1,log)
+                    log("MFi/SAP material ready; SETUP will carry et=16 with ekey/eiv")
+                }
+            }
             SecurityRoute.CONTINUE_VERIFY,SecurityRoute.WAIT_START_PARAMETERS->securityFailure(SecurityReason.STALE_CONTEXT)
         }
         // v11 HAP uses its verified shared secret directly; SAP was an alternative,
         // not a second handshake after HAP. Formal/SAP-only paths still need material.
-        if(!options.experiment||shared==null){
+        // 实验 SAP 已经拿到 mfi 时不走这里的正式门槛：要求的是 Apple 根信任包，而 /auth-setup
+        // 的签名只由对端证书自身的公钥验证，两者不是同一件事。
+        if(mfi==null&&(!options.experiment||shared==null)){
             SecurityRequirements.requireSapSignatureSchema()
             SecurityRequirements.requireSapTrust()
         }
