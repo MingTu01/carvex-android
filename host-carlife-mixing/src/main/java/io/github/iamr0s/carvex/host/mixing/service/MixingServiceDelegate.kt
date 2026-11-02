@@ -27,6 +27,8 @@ interface MixingServiceSession : AutoCloseable {
     val status: Flow<MixingSessionStatus>
     /** Includes application-specific connection preparation before starting the session. */
     suspend fun start(fromHost: Boolean)
+    /** 清理旧会话（发 TEARDOWN + 释放资源），使后续 start() 能干净地建立新连接。 */
+    suspend fun recycle()
     suspend fun disconnect()
     fun setVideoBitrate(value: Int)
     fun sendHostKey(code: Int)

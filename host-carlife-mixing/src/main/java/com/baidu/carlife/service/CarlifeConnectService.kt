@@ -75,7 +75,12 @@ class CarlifeConnectService:Service() {
         }
         val missing=delegate.missingPermissions()
         if(missing.isNotEmpty()){delegate.log("entry","Required permission missing: "+missing.joinToString());stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();return START_NOT_STICKY}
-        if(!controller.active&&sessionJob?.isActive!=true)startSession(hostRequest)
+        // 旧会话必须先彻底清理（TEARDOWN + 资源释放）再开新会话：未释放的 RFCOMM/iAP
+        // 资源会让车机 iAP 状态机留在半开态，重连时车机不回 SYN（NO_SYN），必须重启车机。
+        // 旧逻辑 `if(!controller.active&&...)` 在旧会话"看起来不活跃"但资源仍泄漏时
+        // 直接开新会话，泄漏累积导致 NO_SYN。现在 startSession 内部先 recycle 旧会话。
+        if(controller.active||sessionJob?.isActive==true)delegate.log("entry","New connection request: recycling previous session")
+        startSession(hostRequest)
         return START_NOT_STICKY
     }
     /** `startForegroundService()` 的 5 秒契约必须无条件先满足。
@@ -97,8 +102,10 @@ class CarlifeConnectService:Service() {
     }
     /** The application owns preparation and session implementation; the service owns their lifetime. */
     private fun startSession(hostRequest:Boolean){
+        sessionJob?.cancel() // 旧 sessionJob（如有）先取消，下面的 recycle 会等它收尾
         sessionJob=scope.launch{
             try {
+                controller.recycle() // 等旧 attempt 清理完（TEARDOWN + 资源释放），再开新会话
                 controller.start(hostRequest)
                 controller.status.distinctUntilChanged().collect{status->
                     getSystemService(NotificationManager::class.java).notify(1,notification(status.text))

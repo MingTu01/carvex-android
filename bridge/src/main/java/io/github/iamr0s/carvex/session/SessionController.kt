@@ -119,7 +119,15 @@ class SessionController(
         val r=Resources{trace->
             BridgeStore.log(id,"Resource close type="+trace.type+" elapsedMs="+trace.elapsedMs+" error="+trace.error)
         }
-        val cleanup=SessionTermination{r.close()};termination=cleanup
+        val cleanup=SessionTermination{
+            // 任何终止路径（failure/finally/forceClose）都先尽力发整会话 TEARDOWN。
+            // 不发 TEARDOWN 直接关 socket 会把车机的 iAP 状态机留在半开状态，
+            // 重连时车机不回 iAP SYN（NO_SYN），必须重启车机才能恢复。
+            // stopNormally 内部有 5 秒预算，用独立线程避免阻塞 timer 单线程。
+            val teardown=Thread({runCatching{activeAir?.stopNormally()}},"session-teardown")
+            teardown.isDaemon=true;teardown.start();runCatching{teardown.join(6000)}
+            r.close()
+        };termination=cleanup
         val failed=CompletableDeferred<Throwable>()
         val attemptJob=currentCoroutineContext().job
         val sessionScope=CoroutineScope(currentCoroutineContext())
@@ -1151,5 +1159,18 @@ class SessionController(
         require(value>0)
         applyBitrate?.invoke(value)?:BridgeStore.log(BridgeStore.state.value.id,"Bitrate saved for next connection")
     }
-    override fun close(){applyBitrate=null;applyDynamicFps=null;carPlayAudioTestJob?.cancel();carWithAudioProbeJob?.cancel();job?.cancel();termination?.forceClose();activeAir=null;audioBridge=null;scope.cancel();timer.shutdownNow()}
+    override fun close(){applyBitrate=null;applyDynamicFps=null;carPlayAudioTestJob?.cancel();carWithAudioProbeJob?.cancel();job?.cancel()
+        // forceClose 会跑 cleanup 管道（含 TEARDOWN Binder 调用，最多 ~6 秒），不能在主线程同步执行。
+        // attempt() 的 finally 块会先尝试清理；此处延迟兜底，确保资源一定被释放。
+        val t=termination;termination=null
+        if(t!=null){val th=Thread({runCatching{Thread.sleep(8000)};t.forceClose()},"session-forceClose");th.isDaemon=true;th.start()}
+        activeAir=null;audioBridge=null;scope.cancel();timer.shutdownNow()}
+    /** 清理旧会话使后续 start() 能干净建立新连接：取消旧 attempt → 等 finally 清理 → 兜底 forceClose。
+     *  不发 TEARDOWN 就断开会把车机 iAP 状态机留在半开态，重连时车机不回 SYN（NO_SYN）。 */
+    override suspend fun recycle(){
+        val old=job
+        if(old!=null&&old.isActive){old.cancel();withTimeoutOrNull(10_000){old.join()}}
+        runCatching{termination?.forceClose()}
+        disconnecting=false
+    }
 }

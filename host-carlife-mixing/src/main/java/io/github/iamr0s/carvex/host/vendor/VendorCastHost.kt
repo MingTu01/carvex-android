@@ -310,7 +310,17 @@ class VendorCastHost(
     override fun close() {
         if (closed) return
         closed = true
-        runCatching { remote?.stopCast() }
+        // stopCast() 是同步 Binder IPC，远端进程无响应时会永久阻塞调用线程。
+        // 实车日志里每次 VendorCastHost 的 Resource close 都只有 elapsedMs=null、
+        // 没有回程记录，说明 close() 从未返回，整个清理管道（含 TEARDOWN）被堵死。
+        // 用独立守护线程 + 超时保护，确保 close() 一定在有限时间内返回。
+        val remoteRef = remote
+        if (remoteRef != null) {
+            val stopThread = Thread({ runCatching { remoteRef.stopCast() } }, "vendor-stopCast")
+            stopThread.isDaemon = true
+            stopThread.start()
+            runCatching { stopThread.join(1_000) } // 最多等 1 秒，超时就放弃
+        }
         runCatching { remote?.asBinder()?.unlinkToDeath(death, 0) }
         remote = null
         touch = null

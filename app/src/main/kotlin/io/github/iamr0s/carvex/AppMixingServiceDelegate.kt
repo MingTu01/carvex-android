@@ -51,6 +51,8 @@ internal class AppMixingServiceDelegate(private val service: Service) : MixingSe
             controller.start(fromHost)
         }
 
+        override suspend fun recycle() = controller.recycle()
+
         override suspend fun disconnect() = controller.disconnect()
         override fun close() = controller.close()
         override fun setVideoBitrate(value: Int) = controller.setVideoBitrate(value)

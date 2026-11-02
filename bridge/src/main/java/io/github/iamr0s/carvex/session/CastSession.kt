@@ -14,6 +14,9 @@ interface CastSession {
     /** 请求建立会话；`fromHost` 表示由宿主界面发起（影响提示文案，不影响协议）。 */
     fun start(fromHost: Boolean = false)
 
+    /** 清理旧会话（TEARDOWN + 资源释放），使后续 start() 能干净建立新连接。 */
+    suspend fun recycle()
+
     /** 主动断开；失败不抛异常，状态通过 `BridgeStore` 广播。 */
     suspend fun disconnect()
 
