@@ -44,7 +44,10 @@ class RtspNormalStopTest {
             assertEquals("TEARDOWN $path RTSP/1.0",request.first)
             assertEquals("example",request.headers["session"])
             assertEquals("2",request.headers["cseq"])
-            assertTrue(Plist.dictionary(request.body).isEmpty()) // Neither streams nor teardownType.
+            // spec07 R-7.6 / analysis07 TD-05：整会话收尾发**不带 streams** 的 tdwn，
+            // 且必须带 teardownType=2。空 body 车机不认，会把旧会话状态留着。
+            val body=Plist.dictionary(request.body)
+            assertEquals(mapOf<Any,Any>("teardownType" to 2L),body)
             assertTrue(p.client.readerRunning);assertFalse(stop.isDone)
             p.reply(request);stop.get(2,TimeUnit.SECONDS)
             assertTrue(p.client.readerRunning)
@@ -65,7 +68,9 @@ class RtspNormalStopTest {
             assertThrows(IOException::class.java){p.client.plist("TEARDOWN",path,mapOf("streams" to emptyList<Any>()))}
             assertTrue(p.requests.isEmpty())
             p.reply(first);partial.get(2,TimeUnit.SECONDS)
-            val full=p.next();assertTrue(Plist.dictionary(full.body).isEmpty())
+            val full=p.next()
+            // 同上：整会话 tdwn 必须带 teardownType=2，且不带 streams。
+            assertEquals(mapOf<Any,Any>("teardownType" to 2L),Plist.dictionary(full.body))
             p.reply(full);stop.get(2,TimeUnit.SECONDS)
             assertTrue(p.requests.isEmpty())
         }

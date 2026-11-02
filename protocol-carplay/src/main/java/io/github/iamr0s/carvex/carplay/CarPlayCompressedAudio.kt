@@ -135,6 +135,15 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
                             redDiagnostic.packet(event.bytes,history,historyTimestamp,key,sequence,timestamp,nonce++,streamType)
                         }
                         val packetSequence=sequence
+                        // 首包把线上字节钉进日志：12 字节头 + 正文起始。
+                        // 两种帧密码都出不了声之后，缺的就是"实际发出去长什么样"这一手证据
+                        // （研究侧 OPEN-RUNTIME-1：没有 AirPlay 音频抓包）。只打一次，不进热路径。
+                        if(packets==0L){
+                            val shown=packet.copyOfRange(0,minOf(packet.size,28))
+                            log("Audio first packet category="+category+" type="+streamType+
+                                " wirePT="+(packet[1].toInt() and 127)+" bytes="+packet.size+
+                                " head="+shown.joinToString(""){b->"%02x".format(b.toInt() and 255)})
+                        }
                         val writeBegan=System.nanoTime()
                         socket.send(DatagramPacket(packet,packet.size,peer,port))
                         rtpClock.sent(samples)

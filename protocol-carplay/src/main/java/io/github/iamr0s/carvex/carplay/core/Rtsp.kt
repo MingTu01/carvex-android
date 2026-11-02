@@ -185,7 +185,15 @@ class RtspClient(input:InputStream,var output:OutputStream,
                     while(activeOperations>0&&!closed)lifecycleLock.wait()
                     ensureOpen()
                 }
-                val reply=requestInternal("TEARDOWN",path,Plist.encode(emptyMap<String,Any?>()))
+                // 整会话收尾必须发**不带 streams** 的 `tdwn`，并带上 `teardownType=2`
+                // （`research/protocol/airplay_audio_mic_channel` spec07 **R-7.6** / analysis07 **TD-05**：
+                // 「整会话 | 同一命令，无 streams，teardownType=2」）。
+                //
+                // 此前这里发的是空 body —— 车机收不到「这是整会话结束」的标记，会把旧会话
+                // 状态留在那儿，下次必须重启车机才能重新连。这正是"断开后要重启车机"的形状。
+                // 单流 teardown 的 `teardownType` 仍是条件字段（R-7.1：会话 +0x10 != 0 才写），
+                // 不在那里硬塞 0，两者不能互相推广。
+                val reply=requestInternal("TEARDOWN",path,Plist.encode(mapOf("teardownType" to 2)))
                 if(reply.status !in 200..299)throw StatusException(reply.status,"TEARDOWN",path)
                 if(reply.body.isNotEmpty())Plist.dictionary(reply.body)
                 // A peer may close immediately after its matching 2xx. That does

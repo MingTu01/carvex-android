@@ -220,7 +220,7 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                 log("AirPlay whole-session stop skipped: established session control unavailable")
                 return
             }
-            log("AirPlay whole-session TEARDOWN begin streams=absent teardownType=absent totalBudgetMs=5000")
+            log("AirPlay whole-session TEARDOWN begin streams=absent teardownType=2 totalBudgetMs=5000")
             control.stopSession(url)
             log("AirPlay whole-session TEARDOWN accepted; closing local transports")
         }catch(t:Exception){
