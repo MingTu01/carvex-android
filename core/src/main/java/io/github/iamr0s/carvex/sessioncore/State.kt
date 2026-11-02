@@ -60,17 +60,18 @@ data class Options(val appearance:Appearance=Appearance.SYSTEM,val color:Int=DEF
                    val audioPlaintext:Boolean=false,
                    /** 「音频投送」：是否真的对车机建立 CarPlay 音频流。
                     *
-                    *  **默认关，这是实车证据，不是保守。** 2026-11-02 18:13 那次（画面+触屏都正常、
-                    *  只差声音）的三条音频全部在 3ms 内以
-                    *  `UnsupportedOperationException Audio RTP profile requires HomeKit` 失败，
-                    *  随后 video 稳定 30fps。把音频改成"能建就建"之后（commit 70a723b），
-                    *  音频 SETUP 全部 200、`Compressed RTP` 也开始出包，但 CarWith 的虚拟屏从此
-                    *  一帧都不再提交（`encoder front surface received 1 frame(s)` 之后再无记录），
-                    *  车机上只剩 CarWith 的图标。
+                    *  **曾经的结论已被推翻，留在这里是为了不再走回头路。** 2026-11-02 那轮以为
+                    *  "建音频流会弄停画面"，真实原因是 `d5b7a4f` 把"关掉我们自己的虚拟屏"挪到了
+                    * `prepareCast` 之后：两块 VirtualDisplay 同时挂一块 surface，CarWith 那边就
+                    * 一帧都不再合成。改回"先关再交"（`660d2ba`）之后，画面正常的同时音频
+                    * SETUP 也能全部 200。所以这个开关现在只是"这一版要不要测声音"的意思。 */
+                   val audioEnabled:Boolean=false,
+                   /** 诊断开关：音频建立后向车机发 `SET_PARAMETER volume`。
                     *
-                    *  也就是说：建立音频流和拿到画面目前是互斥的，先保证画面。
-                    *  打开这个开关可以继续单独排查音频，但要预期画面会停。 */
-                   val audioEnabled:Boolean=false){
+                    *  AirPlay 的收端音量是**发送方**设的（dB，-144 约等于静音）。如果车机在收到
+                    *  音量命令前一直保持静音，表现就是"流正常、包在发、日志全绿、就是没声"——
+                    *  和密文解不开的样子一模一样。NaN = 不发（默认，保持原有行为）。 */
+                   val audioVolumeDb:Double=Double.NaN){
     /**
      * Name presented to the CarPlay receiver.
      *
@@ -165,7 +166,8 @@ object BridgeStore {
             p.getInt("dpi",default.dpi),p.getBoolean("experiment",default.experiment),
             p.getString("deviceName",default.deviceName)?:"",p.getBoolean("bindNetwork",default.bindNetwork),p.getBoolean("frontSurface",default.frontSurface),
             p.getBoolean("autoConnect",default.autoConnect),p.getBoolean("audioPlaintext",default.audioPlaintext),
-            p.getBoolean("audioEnabled",default.audioEnabled))
+            p.getBoolean("audioEnabled",default.audioEnabled),
+            p.getFloat("audioVolumeDb",default.audioVolumeDb.toFloat()).toDouble())
         scope.launch {
             val f=File(context.filesDir,"diagnostic.log")
             val saved=synchronized(logFileLock){
@@ -231,6 +233,8 @@ object BridgeStore {
             .putString("deviceName",name).putBoolean("bindNetwork",normalized.bindNetwork).putBoolean("frontSurface",normalized.frontSurface)
             .putBoolean("autoConnect",normalized.autoConnect).putBoolean("audioPlaintext",normalized.audioPlaintext)
             .putBoolean("audioEnabled",normalized.audioEnabled)
+            // NaN 落盘会变成 Float.NaN，读回来还是 NaN，正好当"不发音量命令"的哨兵值。
+            .putFloat("audioVolumeDb",normalized.audioVolumeDb.toFloat())
             .remove("pairingPin").remove("airPlaySecurity").apply()
     }
     @Synchronized fun update(id:String,transform:(SessionState)->SessionState){if(mutable.value.id==id)mutable.value=transform(mutable.value)}

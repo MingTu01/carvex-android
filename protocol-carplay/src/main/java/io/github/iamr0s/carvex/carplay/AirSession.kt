@@ -1174,8 +1174,18 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             log("Audio SETUP accepted category="+category+" type="+route.type+" dataPort="+stream["dataPort"]+
                 " controlPort="+stream["controlPort"]+" RED="+stream["supportsRTPPacketRedundancy"]+
                 " highAccuracy="+stream["supportsHighAccuracyTimestamps"])
+            // 把应答里这条流的**全部**字段打一次。以前只挑了 4 个：如果车机在返回里把
+            // audioFormat（ct/spf/ch/ss）换成了别的，我们看不见，而"按自己的格式发"
+            // 恰好就是那种"日志全绿、车上全程静音"的失败。
+            log("Audio SETUP reply category="+category+" "+stream.entries.sortedBy{it.key.toString()}
+                .joinToString(" "){e->when(val v=e.value){
+                    is ByteArray->e.key.toString()+"=bytes["+v.size+"]"
+                    is Map<*,*>->e.key.toString()+"={"+v.entries.joinToString(","){"${it.key}=${it.value}"}+"}"
+                    is List<*>->e.key.toString()+"=["+v.joinToString(",")+"]"
+                    else->e.key.toString()+"="+v}})
             // An offer in our request is not an enabled mode. Firmware treats a missing
             // or false reply as ordinary cumulative-sample timing for main/alt output.
+            if(category==1)announceVolume(control)
             val receiverHighAccuracyTimestamps=AudioRtpTimestampClock.receiverSupportsHighAccuracy(stream)
             val clockFields=listOf("sampleTime","timestamp","timestampRawNs","audioLatencyMs")
                 .mapNotNull{name->(stream[name] as? Number)?.let{"$name=$it"}}.joinToString(",").ifEmpty{"none"}
@@ -1364,6 +1374,21 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         if(!config){videoFrames++;lastVideoNanos=System.nanoTime()}
     }}
     private var aes:javax.crypto.Cipher?=null
+    /** 音量命令每个会话只发一次（再补一次延迟重发），别让它成为每类音频的重复动作。 */
+    private val volumeAnnounced=java.util.concurrent.atomic.AtomicBoolean()
+    /** AirPlay 的收端音量由发送方设定：`SET_PARAMETER /volume`，单位 dB，-144 约等于静音。 */
+    private suspend fun announceVolume(control:RtspClient){
+        val db=options.audioVolumeDb
+        if(db.isNaN()||!volumeAnnounced.compareAndSet(false,true))return
+        suspend fun send(stage:String){
+            runCatching{control.plist("SET_PARAMETER",connectionPath?:"/",mapOf("volume" to db))}
+                .onSuccess{log("Audio volume announced stage="+stage+" volume="+db+"dB accepted")}
+                .onFailure{log("Audio volume announcement failed stage="+stage+": "+it.javaClass.simpleName+" "+(it.message?:""))}
+        }
+        send("setup")
+        // 车机可能要在流真正开始后才采纳音量，隔一秒再补一次。
+        scope.launch{delay(1000);send("retry")}
+    }
     /** 拆屏幕流：文档 06 章 §2.5 要求"先注销本地流、再发 TEARDOWN"，失败不回滚注销。
      *  正文是 `streams` 数组；`teardownType` 是固件里的**条件字段**（会话 `+0x10 != 0` 才写），
      *  其取值语义仍 `[OPEN]`，所以这里不发，避免发出猜的枚举值。 */
