@@ -127,6 +127,9 @@ object Bootstrap {
         val servicePlan=WiapBluetoothPolicy.plan(device.uuids?.map{it.uuid},o.listen)
         log("Bluetooth target paired="+bonded+" uuidSource=platform_cache observation="+servicePlan.observation+
             " uuidCount="+servicePlan.cachedUuidCount+" freshness=unverified fullSdp=unavailable")
+        // 缓存里有 UUID 但一个都不是 WiAP 时，只报 NO_WIAP_HINT 无法判断对端到底发布了什么。
+        // 这里是平台缓存原文（不是 SDP attribute4 结论），只用于看清对端角色。
+        log("Bluetooth cached uuids="+(device.uuids?.joinToString(","){"0x"+it.uuid.toString()}?.ifEmpty{"none"}?:"unavailable"))
         return coroutineScope {
             // 只注册普通手机 WiAP 角色；Sink 是固件的替代角色，不是额外兼容监听。
             // 公共 SDK 的两个 listener 仍是独立 channel，也不能自定义 SDP profile 属性。
