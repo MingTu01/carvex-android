@@ -13,10 +13,18 @@ object MediaAudioPackets {
         require(pcm16be.size%2==0)
         return accessUnit(pcm16be,key,sequence,timestamp,nonce,type)
     }
-    /** 线上 PT 由流的内部 OSType 推出，不是 iAP2 的 raw 类型：gen(102)→96、main(100)→100、alt(101)→101。 */
-    /** 线上 PT 就是流类型本身。102（`gen `/MainHighAudio）在固件的 FourCC→PT 表里没有映射（`X-0029`），
-     *  Toyota 的 PT→RED 表里 102 那一格是 0（不做 RED）。早先映射成 96/97 是我们自造的值。 */
-    private fun wireType(type:Int)=type
+    /** 线上 PT 不是 SETUP 的 raw stream type，这是两套编号，不能互换：
+     *  `spec/01-audio-streams.md` **R-1.1 的级别是 MUST NOT** —— 原文「禁止把 `type=100` 直接当 PT 100 用」，
+     *  并且「唯一已知的二次映射是 `raw102` → `gen`(96)」（`A01.5`，INFERRED）。
+     *  发送侧标签表见 `analysis/02-codecs-and-rtp.md` §2.4：`gen`=96、`main`=100、`alt`=101。
+     *
+     *  所以 102 必须发成 96。100/101 与标签表同名同值，保持原样。
+     *
+     *  为什么先前写的是恒等映射：上游初版就这么写的，注释里还引了一个 `X-0029` 的证据编号 ——
+     *  那个编号在整个 `research/` 里根本不存在。恒等映射的直接后果是**放音乐那条流（category=1，
+     *  raw type 102）线上 PT=102**，而 102 不在 §2.4 标签表的任何一行里；2026-11-02 19:47 的实车日志
+     *  证实该会话发的正是 102（`Compressed RTP category=1 type=102`），同时车机全程无声。 */
+    private fun wireType(type:Int)=if(type==102)96 else type
     fun accessUnit(payload:ByteArray,key:ByteArray,sequence:Int,timestamp:Long,nonce:Long,type:Int):ByteArray {
         require(type in setOf(100,101,102))
         require(key.size==32&&sequence in 0..65535&&nonce>=0&&payload.isNotEmpty()&&payload.size<=1400)

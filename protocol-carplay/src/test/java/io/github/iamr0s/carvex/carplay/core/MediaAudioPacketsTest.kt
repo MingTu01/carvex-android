@@ -33,8 +33,8 @@ class MediaAudioPacketsTest {
         assertEquals(101,packet[1].toInt() and 127)
         assertArrayEquals(byteArrayOf(0,1),Crypto.open(ByteArray(32),Crypto.nonce(56),packet.copyOfRange(12,packet.size-8),packet.copyOfRange(4,12)))
         assertThrows(IllegalArgumentException::class.java){MediaAudioPackets.packet(byteArrayOf(0,0),ByteArray(32),0,0,0,106)}
-        // 线上 PT 就是流类型本身：早先的 96 是自造值（固件 X-0029 无 gen 映射）。
-        assertEquals(102,MediaAudioPackets.packet(byteArrayOf(0,0),ByteArray(32),0,0,0,102)[1].toInt() and 127)
+        // 线上 PT 不是 raw stream type（R-1.1 MUST NOT 互换）。102 走唯二的二次映射 gen→96（A01.5）。
+        assertEquals(96,MediaAudioPackets.packet(byteArrayOf(0,0),ByteArray(32),0,0,0,102)[1].toInt() and 127)
         assertEquals(100,MediaAudioPackets.packet(byteArrayOf(0,0),ByteArray(32),0,0,0,100)[1].toInt() and 127)
     }
     @Test fun malformedPcmAndSequenceCannotBeSent(){
