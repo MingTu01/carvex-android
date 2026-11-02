@@ -243,7 +243,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(settings = it.settings.copy(frontSurface = enabled)) }
     }
 
-    /** 音频投送。默认关：打开后实车画面会停（见 Options.audioEnabled 的说明）。改动下一次连接生效。 */
+    /** 音频投送。打开才建立 CarPlay 音频流（默认关）。改动下一次连接生效。 */
     fun updateAudioEnabled(enabled: Boolean) {
         if (enabled == _state.value.settings.audioEnabled) return
         BridgeStore.configure(BridgeStore.options.value.copy(audioEnabled = enabled))

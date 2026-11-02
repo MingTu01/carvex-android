@@ -172,6 +172,8 @@
     <string name="settings_audio_plaintext">Send audio unencrypted (diagnostic)</string>
     <string name="settings_audio_plaintext_supporting">Sends MFi/SAP audio payloads without AES-CTR. Use it to tell whether "connected but silent" means the key or the encrypted wire format is wrong, or the car is not playing this stream at all. Leave it off normally.</string>
     <string name="settings_audio_enabled">Send audio (experimental)</string>
-    <string name="settings_audio_enabled_supporting">Establishes CarPlay audio streams with the car. Off by default: real-car logs show that once an audio stream is really opened, CarWith stops updating the cast picture and the head unit keeps showing a single icon. Sound and picture are currently mutually exclusive. Turn it on to diagnose audio on its own, expecting no picture.</string>
+    <string name="settings_audio_enabled_supporting">Establishes CarPlay audio streams with the car. Off by default. The picture is unaffected (an earlier "sound kills the picture" symptom was a separate bug, now fixed).</string>
+    <string name="settings_notif_access">Notification access (title/artist on the head unit)</string>
+    <string name="settings_notif_access_supporting">Reads the now-playing title, artist and progress from the phone and casts them to the car. You must grant this app "Notification access" in system settings — apps cannot request it themselves. No notification content is ever read.</string>
     <string name="airplay_security_automatic">Security is selected automatically from supported internal profiles. Missing profiles or authentication material are reported when connecting.</string>
 </resources>

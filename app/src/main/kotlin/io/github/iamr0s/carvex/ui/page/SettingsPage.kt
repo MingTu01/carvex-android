@@ -5,6 +5,8 @@ import io.github.iamr0s.carvex.ui.model.*
 import io.github.iamr0s.carvex.ui.screen.Nav
 
 import android.bluetooth.BluetoothAdapter
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -38,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
@@ -63,6 +66,7 @@ fun SettingsPage(
 ) {
     val s = state.settings
     val cs = MaterialTheme.colorScheme
+    val context = LocalContext.current
     val focus = LocalFocusManager.current
     val safe = LocalAppInsets.current.content.toPaddingValues()
     val direction = LocalLayoutDirection.current
@@ -154,6 +158,26 @@ fun SettingsPage(
                 style = MaterialTheme.typography.bodySmall,
                 color = cs.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            // 通知使用权：车机显示歌名/歌手的数据来源。系统不允许应用自行申请，只能跳设置。
+            ListItem(
+                headlineContent = { Text(stringResource(R.string.settings_notif_access)) },
+                supportingContent = { Text(stringResource(R.string.settings_notif_access_supporting)) },
+                trailingContent = {
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null
+                    )
+                },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                modifier = Modifier.clickable {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                },
             )
             Text(stringResource(R.string.airplay_security_automatic), modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
             SwitchRow(stringResource(R.string.settings_auto_reconnect), s.autoReconnect) { v ->

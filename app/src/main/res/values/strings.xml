@@ -172,6 +172,8 @@
     <string name="settings_audio_plaintext">音频明文直发（诊断）</string>
     <string name="settings_audio_plaintext_supporting">MFi/SAP 路线改为发送不加密的音频负载。用来判断"连上了但没声音"是密钥/加密格式不对，还是车机根本没在播这条流。正常情况下应当关闭。</string>
     <string name="settings_audio_enabled">音频投送（实验）</string>
-    <string name="settings_audio_enabled_supporting">对车机建立 CarPlay 音频流。当前默认关闭：实车日志显示一旦音频流真的建起来，CarWith 的投屏画面就不再更新（车机上只剩一个图标），所以"有声音"和"有画面"目前是互斥的。打开它可以单独排查音频，但要有画面不出来的预期。</string>
+    <string name="settings_audio_enabled_supporting">对车机建立 CarPlay 音频流。默认关闭；打开后画面不受影响（早先"有声音就没画面"是另一处 bug，已修）。</string>
+    <string name="settings_notif_access">通知使用权（车机显示歌名/歌手）</string>
+    <string name="settings_notif_access_supporting">从手机读取"正在播放"的歌名/歌手/进度并投到车机。需要你在系统设置里给本应用开启「通知使用权」，系统不允许应用自己申请。不会读取你的任何通知内容。</string>
     <string name="airplay_security_automatic">安全流程由程序按内部支持配置自动选择；缺少适用配置或认证材料时会说明原因。</string>
 </resources>

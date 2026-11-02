@@ -184,9 +184,27 @@ class SessionController(
         val musicLock=Any()
         val latestMusic=AtomicReference<NowPlayingUpdate.Track?>(null)
         val musicAir=AtomicReference<AirSession?>(null)
+        /** 宿主推过音乐信息吗？推过就以宿主为准，别让手机侧的数据源把它盖掉。 */
+        val hostMusicSeen=AtomicBoolean(false)
+        /** 手机侧「正在播放」数据源（通知使用权）。宿主不推时由它补位。 */
+        var phoneNowPlaying:MediaSessionNowPlaying?=null
         fun deliverMusic(replaceMedia:Boolean=true){synchronized(musicLock){
             if(!ended.get())latestMusic.get()?.let{musicAir.get()?.nowPlaying(it,replaceMedia=replaceMedia)}
         }}
+        /** 本地函数必须先声明后使用，所以这里排在 deliverMusic 之后。 */
+        fun startPhoneNowPlaying(){
+            if(phoneNowPlaying!=null)return
+            val watcher=MediaSessionNowPlaying(context,{BridgeStore.log(id,it)}){track->
+                if(ended.get()||hostMusicSeen.get())return@MediaSessionNowPlaying
+                if(track==latestMusic.get())return@MediaSessionNowPlaying
+                latestMusic.set(track)
+                scope.launch(Dispatchers.IO){runCatching{deliverMusic()}}
+                BridgeStore.update(id){it.copy(hostMusic=listOfNotNull(track.title,track.artist)
+                    .filter{it.isNotBlank()}.joinToString(" - ").ifBlank{"(未命名)"})}
+            }
+            phoneNowPlaying=watcher
+            watcher.start()
+        }
         fun deliverNavigation(fields:List<Pair<Int,ByteArray>>){
             if(ended.get())return
             val air=musicAir.get() ?: return
@@ -242,6 +260,8 @@ class SessionController(
             override fun music(info:HostMusic?){
                 if(ended.get())return
                 if(info==null){BridgeStore.log(id,"Host reported no current music item");return}
+                // 宿主既然会推，就让它赢：手机侧数据源从此不再覆盖它。
+                hostMusicSeen.set(true)
                 BridgeStore.log(id,"${"Host music source="}${info.source}${" song="}${info.song}${" artist="}${info.artist}${" duration="}${info.duration}${" playlistSize="}${info.playlistSize}${" index="}${info.index}")
                 BridgeStore.update(id){it.copy(hostMusic=BridgeStore.redact(
                     listOfNotNull(info.song,info.artist).filter{it.isNotBlank()}.joinToString(" - ").ifBlank{"(未命名)"}))}
@@ -701,6 +721,9 @@ class SessionController(
             if(disconnecting)throw CancellationException("User disconnect before AirPlay preparation")
             musicAir.set(air)
             deliverMusic()
+            // 链路通了才有地方发 5001。宿主不推音乐信息（实车从来没推过），
+            // 所以这里把手机自己的媒体会话接上，车机才有歌名/歌手可显示。
+            startPhoneNowPlaying()
             air.screenOwnership={phone->synchronized(touchLock){
                 if(ended.get()||touchClosed)return@synchronized false
                 if(!phone&&pressed){
@@ -992,6 +1015,7 @@ class SessionController(
             try{throw failed.await()}finally{firstFrameDeadline?.cancel(false)}
         } finally {
             ended.set(true);voiceToggle.close();startAudio.set(null);startSpeech.set(null);audioDemand.close();metrics.cancel(false);applyDynamicFps=null;applyBitrate=null;sendKey=null;carPlayAudioTestJob?.cancel();carPlayAudioTestJob=null;carWithAudioProbeJob?.cancel();carWithAudioProbeJob=null
+            phoneNowPlaying?.stop();phoneNowPlaying=null
             cleanup.close()
             withContext(NonCancellable){cleanup.awaitClosed()}
             if(termination===cleanup)termination=null

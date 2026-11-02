@@ -91,6 +91,17 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+        <!-- 只为拿「通知使用权」而存在：没有它 MediaSessionManager.getActiveSessions()
+             直接抛 SecurityException，车机上就没有歌名/歌手可显示。不读任何通知内容。 -->
+        <service
+            android:name="io.github.iamr0s.carvex.NowPlayingAccessService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
     </application>
 </manifest>
 
