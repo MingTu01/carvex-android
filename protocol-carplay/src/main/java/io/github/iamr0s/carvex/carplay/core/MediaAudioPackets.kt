@@ -37,14 +37,14 @@ object MediaAudioPackets {
      *  这里只做了“头部不变、密码学换成 MFi 流密钥”这一处最小改动，没有新增头部字段，
      *  也没有假定 tag/nonce 存在。真机不接受时，第一步该看的不是公式，而是这里的选择。
      */
-    fun sapPacket(payload:ByteArray,cipher:Cipher,sequence:Int,timestamp:Long,type:Int):ByteArray {
+    fun sapPacket(payload:ByteArray,crypto:SapAudioCrypto,sequence:Int,timestamp:Long,type:Int):ByteArray {
         require(type in setOf(100,101,102))
         require(sequence in 0..65535&&payload.isNotEmpty()&&payload.size<=1400)
         val pt=wireType(type)
         val header=ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN).put(0x80.toByte()).put(pt.toByte())
             .putShort(sequence.toShort()).putInt(timestamp.toInt()).putInt(0).array()
         // 计数器由调用方持有的同一个 Cipher 推进：跨包连续，不在这里重置。
-        return header+cipher.update(payload)
+        return header+crypto.apply(payload)
     }
     /** RED 外层 PT：main→104、alt→105、gen→97（ch08 §3.3）。 */
     /** RED 后的 PT：只有 100/101/106 有映射（`X-0030`；Toyota 表 {104,105,—,—,—,—,108,109} 一致）。 */
@@ -87,4 +87,19 @@ object MediaAudioPackets {
         val iv=Crypto.nonce(nonce)
         return header+redHeader+Crypto.seal(key,iv,clear,header.copyOfRange(4,12))+iv.copyOfRange(4,12)
     }
+}
+
+/** MFi/SAP 音频发送侧的密码上下文。
+ *
+ *  [cipher] 非空 = 走 AES-CTR（06-frame-crypto-aes R-6.1，等长、无 tag、计数器跨包连续）。
+ *  [cipher] 为空 = **诊断用的明文直发**：12 字节头照旧，payload 原样送出。
+ *
+ *  为什么需要这个空档：SETUP 被接受只证明车机愿意收这条流，不证明它能解开。
+ *  接收端固件在 `stream+0xa0` 没有密码器时是**直接放行明文并返回成功**的
+ *  （AirPlaySender 0x2519c0acc → 返回 0），所以"车机没给音频装解密器、我们却发了密文"
+ *  是完全可能的状态，而它在日志上表现为一切正常、只是没声音。
+ *  真机上一旦确认改用明文能出声，就说明线上格式该按明文定稿，而不是继续调 CTR。 */
+class SapAudioCrypto(private val cipher:Cipher?) {
+    val plaintext:Boolean get()=cipher==null
+    fun apply(payload:ByteArray):ByteArray=cipher?.update(payload)?:payload
 }

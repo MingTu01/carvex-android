@@ -52,7 +52,12 @@ data class Options(val appearance:Appearance=Appearance.SYSTEM,val color:Int=DEF
                    val experiment:Boolean=false,val deviceName:String="",val bindNetwork:Boolean=true,val frontSurface:Boolean=false,
                    /** 「主动连接」：本端主动发起（关掉 = 只做被连接方，等价于原来的 listen=true）。
                     *  默认开：绝大多数用户是从本应用点一台车机去连，而不是等车机来找。 */
-                   val autoConnect:Boolean=true){
+                   val autoConnect:Boolean=true,
+                   /** 诊断开关：MFi/SAP 音频只发 12 字节明文头 + 原始 AAC 负载，不做 AES-CTR。
+                    *  SETUP 200 只证明车机接受注册，不证明它能解开我们自推的线上格式；
+                    *  开这个开关跑一次就能一刀切开"密码层错"还是"车机根本没在听这条流"。
+                    *  默认关：默认仍按 R-6.1 加密发送。 */
+                   val audioPlaintext:Boolean=false){
     /**
      * Name presented to the CarPlay receiver.
      *
@@ -146,7 +151,7 @@ object BridgeStore {
             p.getString("target",default.target)?:"",savedMac,p.getBoolean("listen",default.listen),p.getInt("retryIntervalSeconds",default.retryIntervalSeconds),
             p.getInt("dpi",default.dpi),p.getBoolean("experiment",default.experiment),
             p.getString("deviceName",default.deviceName)?:"",p.getBoolean("bindNetwork",default.bindNetwork),p.getBoolean("frontSurface",default.frontSurface),
-            p.getBoolean("autoConnect",default.autoConnect))
+            p.getBoolean("autoConnect",default.autoConnect),p.getBoolean("audioPlaintext",default.audioPlaintext))
         scope.launch {
             val f=File(context.filesDir,"diagnostic.log")
             val saved=synchronized(logFileLock){
@@ -210,7 +215,7 @@ object BridgeStore {
             .putString("phoneMac",mac).putBoolean("listen",normalized.listen).putInt("retryIntervalSeconds",normalized.retryIntervalSeconds)
             .putInt("dpi",normalized.dpi).putBoolean("experiment",normalized.experiment)
             .putString("deviceName",name).putBoolean("bindNetwork",normalized.bindNetwork).putBoolean("frontSurface",normalized.frontSurface)
-            .putBoolean("autoConnect",normalized.autoConnect)
+            .putBoolean("autoConnect",normalized.autoConnect).putBoolean("audioPlaintext",normalized.audioPlaintext)
             .remove("pairingPin").remove("airPlaySecurity").apply()
     }
     @Synchronized fun update(id:String,transform:(SessionState)->SessionState){if(mutable.value.id==id)mutable.value=transform(mutable.value)}

@@ -236,6 +236,20 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(settings = it.settings.copy(experimentalAuth = enabled)) }
     }
 
+    /** 静帧重发。开关直接落到会话选项里，下一次连接生效（不打断当前会话）。 */
+    fun updateFrontSurface(enabled: Boolean) {
+        if (enabled == _state.value.settings.frontSurface) return
+        BridgeStore.configure(BridgeStore.options.value.copy(frontSurface = enabled))
+        _state.update { it.copy(settings = it.settings.copy(frontSurface = enabled)) }
+    }
+
+    /** MFi/SAP 音频明文直发（诊断用）。默认关，改动下一次连接生效。 */
+    fun updateAudioPlaintext(enabled: Boolean) {
+        if (enabled == _state.value.settings.audioPlaintext) return
+        BridgeStore.configure(BridgeStore.options.value.copy(audioPlaintext = enabled))
+        _state.update { it.copy(settings = it.settings.copy(audioPlaintext = enabled)) }
+    }
+
     fun readPhoneMacWithShizuku() {
         viewModelScope.launch {
             if (!ShizukuBluetoothMac.available()) {
@@ -296,6 +310,8 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             ?: io.github.iamr0s.carvex.sessioncore.Options.localDeviceName(appContext),
         phoneMac = BridgeStore.options.value.phoneMac,
         experimentalAuth = BridgeStore.options.value.experiment,
+        frontSurface = BridgeStore.options.value.frontSurface,
+        audioPlaintext = BridgeStore.options.value.audioPlaintext,
         autoReconnect = prefs.getBoolean("auto", true),
         connectOnLaunch = prefs.getBoolean("launch", false),
         keepScreenOn = prefs.getBoolean("awake", true),

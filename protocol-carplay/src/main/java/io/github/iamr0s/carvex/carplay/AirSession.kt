@@ -185,7 +185,13 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         scope.launch{
             try{for(notification in modeOutput){
                 val control=client?:error("Modes before control session")
-                control.plist("POST","/command",notification)
+                // 车机对模式通知回非 2xx，是"这个通知我不接受"，不是"传输断了"。
+                // 实车证据：422 曾把一条画面/音频都正常的会话在第 20 秒整条判死。
+                // 只有 IO 层异常才升格成会话失败。
+                try{control.plist("POST","/command",notification)}
+                catch(t:RtspClient.StatusException){
+                    log("modes-writer rejected status="+t.status+"; session kept")
+                }
             }}catch(t:Exception){if(isActive)channelFailure("modes-writer",t)}
         }
         scope.launch{
@@ -844,7 +850,14 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         val command=Plist.dictionary(request.body)
         if(command["type"]!="changeModes")return
         val reply=Plist.dictionary(body)
-        val notification=mapOf("type" to "modesChanged","params" to reply["params"])
+        // 拒绝模式请求时 command() 回的是 `{status:1}`，没有 params。转发一个 params=null 的
+        // modesChanged 会被车机判为 422（实车 carvex-log-20261102-185758：553B 全 200，91B 那次 422），
+        // 而 422 又会连带把整条会话判死。拒绝本身已经由事件应答的 status 表达了，这里不再补发。
+        val params=reply["params"]?:run{
+            log("changeModes declined; no modesChanged notification sent (reply carries status="+reply["status"]+")")
+            return
+        }
+        val notification=mapOf("type" to "modesChanged","params" to params)
         if(modeOutput.trySend(notification).isFailure)throw IOException("Modes notification queue unavailable")
     }
     private fun event(r:RtspMessage,replays:SiriRequests=controlSiri):Pair<Int,ByteArray> =
@@ -1049,9 +1062,19 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         // SHA512("AirPlayStreamKey"‖dec(id)‖K)[0:16]（04-kdf，A-46）。
         // 音频沿用同一公式，按流 id 各建一个 AES-CTR 上下文；计数器必须跨包连续，
         // 不能每包重建（06-frame-crypto-aes R-6.1）。HAP 路线仍走原来的 HKDF，行为不变。
-        val sapAudio=if(homeKitSecret==null)mfi?.streamCipher(id)else null
-        if(homeKitSecret==null&&sapAudio==null)
-            throw UnsupportedOperationException("Audio RTP profile requires HomeKit or MFi/SAP key material")
+        //
+        // 诊断开关：`options.audioPlaintext` 时 cipher 传 null，12 字节头照旧、payload 明文直发。
+        // 依据是接收端固件在 stream+0xa0 没有密码器时直接放行明文并返回成功
+        // （AirPlaySender 0x2519c0acc → 返回 0），所以"我们发了密文、车机按明文解"是可能的状态，
+        // 而它在日志上完全无声无息。这一步只用来判定密码层，不改变默认行为。
+        val sapAudio=if(homeKitSecret==null){
+            val cipher=if(options.audioPlaintext)null else mfi?.streamCipher(id)
+            if(cipher==null&&!options.audioPlaintext)
+                throw UnsupportedOperationException("Audio RTP profile requires HomeKit or MFi/SAP key material")
+            SapAudioCrypto(cipher)
+        }else null
+        if(sapAudio?.plaintext==true)
+            log("Audio category="+category+" MFi/SAP diagnostic: payload sent as PLAINTEXT; this run cannot confirm the AES-CTR wire format")
         val key=if(homeKitSecret!=null)Crypto.hkdf(homeKitSecret,"DataStream-Salt$id","DataStream-Output-Encryption-Key")
             else ByteArray(0)
         // 麦克风只有 HomeKit 的输入密钥方向实现了。SAP 下不声明 input：宁可少一路麦克风，
@@ -1197,7 +1220,7 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             }
             else CarPlayCompressedAudio.create(udp,address,port,category,route.type,candidate,key,retransmit,takeOwnership,releaseStream,log,
                 canSend={!stopping&&(category==2||audioOwnership.allowsMainSend())},redEnabled=redEnabled,
-                receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps,sapCipher=sapAudio)
+                receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps,sapCrypto=sapAudio)
             transportRef.set(transport)
             val combined=microphone?.let{DuplexAudioTransport(transport,it)}?:transport
             audioTransports[category]=transport

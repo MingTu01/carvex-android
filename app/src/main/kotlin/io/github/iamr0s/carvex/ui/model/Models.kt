@@ -82,6 +82,12 @@ data class Settings(
     val methods: Set<Method> = setOf(Method.Bluetooth),
     val theme: ThemeMode = ThemeMode.System,
     val experimentalAuth: Boolean = false,
+    /** 静帧重发：CarWith 接管帧源后不会自己重绘，静止画面会让编码器零输出。
+     *  打开后用编码器前置画布把手里那帧再提交一次，换出一个小 P 帧维持媒体流。
+     *  代价是每帧一次 blit 和几帧延迟。 */
+    val frontSurface: Boolean = false,
+    /** 诊断：MFi/SAP 音频发明文，不做 AES-CTR。用来判定"没声音"是密码层错还是车机没在听。 */
+    val audioPlaintext: Boolean = false,
     /** Enable navigation and voice-assistant audio output; disabled by default while the path is diagnosed. */
 )
 

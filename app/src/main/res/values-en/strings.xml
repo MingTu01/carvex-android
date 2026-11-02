@@ -167,5 +167,9 @@
     </style>
     <string name="experimental_auth">Experimental authentication</string>
     <string name="experimental_auth_supporting">Uses the experimental connection flow while verifying challenge signatures, pairing signatures and encrypted data. Production certificate-chain trust is not established.</string>
+    <string name="settings_front_surface">Repeat still frames</string>
+    <string name="settings_front_surface_supporting">After CarWith takes over the picture it never repaints, so a still screen stops the encoder and the car holds the last frame. Turning this on resubmits the held frame every second to keep a small P frame flowing, at the cost of one blit per frame and a few frames of latency.</string>
+    <string name="settings_audio_plaintext">Send audio unencrypted (diagnostic)</string>
+    <string name="settings_audio_plaintext_supporting">Sends MFi/SAP audio payloads without AES-CTR. Use it to tell whether "connected but silent" means the key or the encrypted wire format is wrong, or the car is not playing this stream at all. Leave it off normally.</string>
     <string name="airplay_security_automatic">Security is selected automatically from supported internal profiles. Missing profiles or authentication material are reported when connecting.</string>
 </resources>

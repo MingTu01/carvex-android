@@ -118,8 +118,8 @@ class MediaAudioPacketsTest {
     @Test fun sapPacketKeepsTheHomeKitHeaderAndAddsNoTagOrNonceTail(){
         val material=ByteArray(16){it.toByte()}
         val payload=byteArrayOf(1,2,3,4)
-        val sap=MediaAudioPackets.sapPacket(payload,sapCipher(7,material,javax.crypto.Cipher.ENCRYPT_MODE),
-            9,0x11223344L,100)
+        val sap=MediaAudioPackets.sapPacket(payload,
+            SapAudioCrypto(sapCipher(7,material,javax.crypto.Cipher.ENCRYPT_MODE)),9,0x11223344L,100)
         val hap=MediaAudioPackets.packet(payload,ByteArray(32),9,0x11223344L,0,100)
         // 两条路线共用同一套头：换的只是密码学，不是封装。
         assertArrayEquals(hap.copyOfRange(0,12),sap.copyOfRange(0,12))
@@ -130,7 +130,7 @@ class MediaAudioPacketsTest {
     }
     @Test fun sapPacketRunsOneContinuousCounterAcrossPackets(){
         val material=ByteArray(16){it.toByte()}
-        val sender=sapCipher(7,material,javax.crypto.Cipher.ENCRYPT_MODE)
+        val sender=SapAudioCrypto(sapCipher(7,material,javax.crypto.Cipher.ENCRYPT_MODE))
         val same=byteArrayOf(9,9,9,9)
         val first=MediaAudioPackets.sapPacket(same,sender,1,100L,100)
         val second=MediaAudioPackets.sapPacket(same,sender,2,101L,100)
@@ -142,12 +142,26 @@ class MediaAudioPacketsTest {
         assertArrayEquals(same,receiver.update(second.copyOfRange(12,second.size)))
     }
     @Test fun sapPacketRejectsUnknownTypesAndOversizedPayload(){
-        val cipher=sapCipher(7,ByteArray(16),javax.crypto.Cipher.ENCRYPT_MODE)
+        val cipher=SapAudioCrypto(sapCipher(7,ByteArray(16),javax.crypto.Cipher.ENCRYPT_MODE))
         assertThrows(IllegalArgumentException::class.java){
             MediaAudioPackets.sapPacket(byteArrayOf(1,2),cipher,0,0,106)}
         assertThrows(IllegalArgumentException::class.java){
             MediaAudioPackets.sapPacket(ByteArray(1401),cipher,0,0,100)}
         assertThrows(IllegalArgumentException::class.java){
             MediaAudioPackets.sapPacket(byteArrayOf(),cipher,0,0,100)}
+    }
+    @Test fun plaintextSapPacketKeepsTheHeaderAndCopiesThePayloadVerbatim(){
+        // 诊断档：cipher 为 null 时不加密，但 12 字节头必须一模一样。
+        // 依据是接收端固件在 stream+0xa0 没有密码器时直接放行明文（0x2519c0acc → 返回 0），
+        // 所以"头不变、正文原样"是一个真实可能被车机接受的状态，而不是随便漏掉加密。
+        val payload=byteArrayOf(1,2,3,4,5,6)
+        val plain=MediaAudioPackets.sapPacket(payload,SapAudioCrypto(null),9,0x11223344L,100)
+        val encrypted=MediaAudioPackets.sapPacket(payload,
+            SapAudioCrypto(sapCipher(7,ByteArray(16){it.toByte()},javax.crypto.Cipher.ENCRYPT_MODE)),9,0x11223344L,100)
+        assertArrayEquals(encrypted.copyOfRange(0,12),plain.copyOfRange(0,12))
+        assertArrayEquals(payload,plain.copyOfRange(12,plain.size))
+        assertEquals(12+payload.size,plain.size)
+        assertTrue(SapAudioCrypto(null).plaintext)
+        assertFalse(SapAudioCrypto(sapCipher(7,ByteArray(16),javax.crypto.Cipher.ENCRYPT_MODE)).plaintext)
     }
 }

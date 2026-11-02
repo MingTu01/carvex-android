@@ -133,6 +133,21 @@ fun SettingsPage(
                 color = cs.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
+            // 这两个开关直接决定实车现象，改完要重新连一次才生效。
+            SwitchRow(stringResource(R.string.settings_front_surface), s.frontSurface, vm::updateFrontSurface)
+            Text(
+                stringResource(R.string.settings_front_surface_supporting),
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            SwitchRow(stringResource(R.string.settings_audio_plaintext), s.audioPlaintext, vm::updateAudioPlaintext)
+            Text(
+                stringResource(R.string.settings_audio_plaintext_supporting),
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
             Text(stringResource(R.string.airplay_security_automatic), modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
             SwitchRow(stringResource(R.string.settings_auto_reconnect), s.autoReconnect) { v ->
                 vm.updateSettings("auto_reconnect=$v") { it.copy(autoReconnect = v) }
