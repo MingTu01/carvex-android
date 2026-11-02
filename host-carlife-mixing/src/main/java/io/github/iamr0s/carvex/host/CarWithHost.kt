@@ -36,5 +36,6 @@ class CarWithHost(context: Context, events: HostCallbacks) : CastHost {
     override fun capabilities(): HostCapabilities? = delegate.capabilities()
     override fun key(event: KeyEvent) = delegate.key(event)
     override fun touch(event: MotionEvent) = delegate.touch(event)
+    override suspend fun requestForeground() = delegate.requestForeground()
     override fun close() = delegate.close()
 }

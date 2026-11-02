@@ -45,4 +45,13 @@ interface CastHost : AutoCloseable {
 
     /** 把车机触摸事件交给宿主；返回宿主是否接受。 */
     fun touch(event: android.view.MotionEvent): Boolean
+
+    /**
+     * 宿主没有主动接管画面时的兜底：把它自己的界面带到前台，再请它准备投屏。
+     *
+     * 实测（小米 CarWith）绑定服务本身不会让 `onCastPrepared` 发生，只有它自己的界面
+     * 在前台进入投屏状态时才会。编排层只在"已经绑定成功但没收到 onCastPrepared"时调用，
+     * 返回 false 表示宿主没有可启动的入口，调用方应维持现状。
+     */
+    suspend fun requestForeground(): Boolean = false
 }

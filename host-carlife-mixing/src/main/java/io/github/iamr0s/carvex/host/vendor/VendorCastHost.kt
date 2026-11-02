@@ -242,6 +242,20 @@ class VendorCastHost(
         ready.await().prepareCast(CastConfig(width, height, dpi, surface))
     }
 
+    /**
+     * 绑定成功不等于接管画面：实测小米 CarWith 只在自己界面处于投屏状态时才回
+     * `onCastPrepared`，所以没收到回声时把它的入口带到前台，再让调用方重试一次。
+     */
+    override suspend fun requestForeground(): Boolean = withContext(Dispatchers.Main.immediate) {
+        if (closed) return@withContext false
+        val launch = context.packageManager.getLaunchIntentForPackage(config.hostPackage)
+            ?: return@withContext false
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+        val ok = runCatching { context.startActivity(launch) }.isSuccess
+        events.event(if (ok) "foreground-requested" else "foreground-request-failed")
+        ok
+    }
+
     /** Preserve the existing PCM route. This bridge does not negotiate Bluetooth routing. */
     override suspend fun selectCarLifePlusAudio() {
         check(!closed)
