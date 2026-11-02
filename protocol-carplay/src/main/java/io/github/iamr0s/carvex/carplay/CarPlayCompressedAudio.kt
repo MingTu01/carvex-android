@@ -7,6 +7,8 @@ import io.github.iamr0s.carvex.pcm.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import java.net.*
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.Cipher
 
@@ -20,7 +22,10 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
     private val log:(String)->Unit,private val redEnabled:Boolean,
     private val canSend:()->Boolean,private val sapCrypto:SapAudioCrypto?,receiverHighAccuracyTimestamps:Boolean,
     /** 线上 PT 逃生阀，见 [MediaAudioPackets.sapPacket]。null = 规范映射（raw102→main 100）。 */
-    private val wirePtOverride:Int?=null):NegotiatedAudioTransport {
+    private val wirePtOverride:Int?=null,
+    /** 车机 SETUP 回的音频 output control port。之前只传给了麦克风、媒体路丢弃了。
+     *  RTCP Sender Report 发到这个端口让车机建立播放时钟。 */
+    private val controlPort:Int?=null):NegotiatedAudioTransport {
     private val closed=AtomicBoolean(false)
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val output=Channel<CompressedAudioEncoder.Event>(8)
@@ -62,6 +67,47 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
         if(closed.get())return
         log("${"Compressed audio category="}${category}${" failed: "}${t.javaClass.simpleName}${" "}${t.message}${"; audible acceptance pending"}")
         close()
+    }
+    /** RTCP Sender Report（RFC 3550 §6.4.1）：28 字节，PT=200。
+     *  车机的音频 output control port 可能需要 RTCP SR 建立播放时钟才开始播放。
+     *  之前我们只发 RTP 数据、不发 RTCP 控制——车机可能一直在等 SR。 */
+    private fun buildRtcpSenderReport(ssrc:Int):ByteArray {
+        val ntpMs=System.currentTimeMillis()
+        val ntpSec=(ntpMs/1000L)+2208988800L // NTP epoch offset from Unix epoch
+        val ntpFrac=((ntpMs%1000L)*0x100000000L/1000L).toLong()
+        val rtpTs=rtpClock.timestamp(0) // current stream timestamp base
+        return ByteBuffer.allocate(28).order(ByteOrder.BIG_ENDIAN)
+            .put(0x80.toByte()) // V=2, P=0, RC=0
+            .put(200.toByte()) // PT=200 (Sender Report)
+            .putShort(6) // length in 32-bit words minus 1
+            .putInt(ssrc)
+            .putInt((ntpSec and 0xFFFFFFFFL).toInt()) // NTP timestamp high
+            .putInt((ntpFrac and 0xFFFFFFFFL).toInt()) // NTP timestamp low
+            .putInt(rtpTs.toInt()) // RTP timestamp
+            .putInt(packets.toInt()) // sender packet count
+            .putInt(0) // sender octet count (not tracked separately)
+            .array()
+    }
+    /** 定期发 RTCP SR 到车机音频 controlPort。由 [AudioDebugConfig.rtcpSr] 控制开关。 */
+    private fun startRtcpSender(){
+        val cp=controlPort?:return
+        if(!AudioDebugConfig.rtcpSr){log("Audio RTCP SR category="+category+" disabled by AudioDebugConfig.rtcpSr=false");return}
+        scope.launch{
+            var sent=0
+            while(isActive&&!closed.get()){
+                try{
+                    val sr=buildRtcpSenderReport(0) // SSRC=0 (matches our RTP header)
+                    socket.send(DatagramPacket(sr,sr.size,peer,cp))
+                    if(sent==0)log("Audio RTCP SR category="+category+" controlPort="+cp+
+                        " first report sent; waiting for receiver playback clock")
+                    sent++
+                }catch(t:Throwable){
+                    if(!closed.get())log("Audio RTCP SR category="+category+" failed: "+t.javaClass.simpleName+" "+(t.message?:""))
+                    break
+                }
+                delay(5000) // RTCP SR recommended interval ~5s
+            }
+        }
     }
     private fun startWriter(){scope.launch(start=CoroutineStart.UNDISPATCHED){
         var config=false;var ownershipTaken=false;var firstTiming=true
@@ -125,9 +171,8 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
                         // from the SETUP reply. No unsent AU consumes the continuous RTP clock.
                         val timestamp=rtpClock.timestamp(plan.timestamp)
                         // AAC 需要 ADTS 帧封装：MediaCodec 出的是 raw AU，CarPlay 车机端
-                        // 的 AAC 解码器可能只认 ADTS 同步字（0xFFF1）。raw-AU 假设来自
-                        // HomeKit 接收端，未经 CarPlay 实证——如果车机要 ADTS，怎么都哑。
-                        val framed=if(selected.codec in setOf(CarPlayAudioPlan.Codec.AAC_LC,CarPlayAudioPlan.Codec.AAC_ELD)){
+                        // 的 AAC 解码器可能只认 ADTS 同步字（0xFFF1）。由 AudioDebugConfig.adts 控制。
+                        val framed=if(selected.codec in setOf(CarPlayAudioPlan.Codec.AAC_LC,CarPlayAudioPlan.Codec.AAC_ELD)&&AudioDebugConfig.adts){
                             MediaAudioPackets.adtsFrame(event.bytes,selected.rate,selected.channels,
                                 if(selected.codec==CarPlayAudioPlan.Codec.AAC_ELD)39 else 1)
                         }else event.bytes
@@ -187,9 +232,9 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
             format:CarPlayAudioPlan.Format,key:ByteArray,retransmit:AudioRtpRetransmit?,ownership:suspend ()->Unit,stopped:()->Unit,
             log:(String)->Unit,canSend:()->Boolean={true},redEnabled:Boolean=false,
             receiverHighAccuracyTimestamps:Boolean=false,sapCrypto:SapAudioCrypto?=null,
-            wirePtOverride:Int?=null):CarPlayCompressedAudio {
+            wirePtOverride:Int?=null,controlPort:Int?=null):CarPlayCompressedAudio {
             require(format.codec in setOf(CarPlayAudioPlan.Codec.AAC_LC,CarPlayAudioPlan.Codec.AAC_ELD,CarPlayAudioPlan.Codec.OPUS))
-            val transport=CarPlayCompressedAudio(socket,peer,port,category,type,format,key,retransmit,ownership,stopped,log,redEnabled,canSend,sapCrypto,receiverHighAccuracyTimestamps,wirePtOverride)
+            val transport=CarPlayCompressedAudio(socket,peer,port,category,type,format,key,retransmit,ownership,stopped,log,redEnabled,canSend,sapCrypto,receiverHighAccuracyTimestamps,wirePtOverride,controlPort)
             val bitrate=when(format.codec){CarPlayAudioPlan.Codec.AAC_LC->192000;CarPlayAudioPlan.Codec.AAC_ELD->if(format.rate<=24000)48000 else 96000;else->if(format.rate<=24000)48000 else 96000}
             try{
                 log("Audio RED diagnostic category="+category+" codec="+format.codec+" negotiatedRED="+redEnabled+
@@ -197,6 +242,7 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
                     " configuredPrimaryOnly="+transport.redDiagnostic.configured+" appliedPrimaryOnly="+transport.redDiagnostic.applied+
                     "; primary-only isolation; packet format fixed by validated SETUP negotiation")
                 transport.startWriter()
+                transport.startRtcpSender() // 定期发 RTCP SR 到 controlPort，帮车机建播放时钟
                 transport.encoder=CompressedAudioEncoder.create(format,bitrate,{event->
                     // Bounded, cancellable backpressure. Configuration and access units remain
                     // ordered; the encoder has already returned any MediaCodec output buffer.

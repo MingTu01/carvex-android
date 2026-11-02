@@ -1257,7 +1257,9 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                 receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps,sapCrypto=sapAudio,
                 // 线上 PT 默认走规范映射（raw102→main 100，rtp_timing A03.1 的发送侧
                 // FourCC→PT 硬编码表里没有 gen）；audioRawWirePt 只用于真机 A/B。
-                wirePtOverride=if(options.audioRawWirePt)route.type else null)
+                wirePtOverride=if(options.audioRawWirePt)route.type else null,
+                // 车机 SETUP 回的 output control port：RTCP SR 发到这里帮车机建播放时钟
+                controlPort=(stream["controlPort"] as? Number)?.toInt()?.takeIf{it in 1..65535})
             transportRef.set(transport)
             val combined=microphone?.let{DuplexAudioTransport(transport,it)}?:transport
             audioTransports[category]=transport
