@@ -72,16 +72,18 @@ data class Options(val appearance:Appearance=Appearance.SYSTEM,val color:Int=DEF
                     *  音量命令前一直保持静音，表现就是"流正常、包在发、日志全绿、就是没声"——
                     *  和密文解不开的样子一模一样。NaN = 不发（默认，保持原有行为）。 */
                    val audioVolumeDb:Double=Double.NaN,
-                   /** 诊断开关：线上 RTP 的 PT 直接用 SETUP 的 raw stream type（旧行为）。
-                    *
-                    *  默认关 = 走规范映射 `raw102 → gen(96)`，见 `spec/01-audio-streams.md`
-                    *  **R-1.1（MUST NOT 互换）** 与 `A01.5`。接收准入掩码 `0x3d13` 不含 102，
-                    *  发 102 会被车机在入口处就丢掉。
-                    *
-                    *  打开 = 恢复恒等映射，只在真机上需要做一次 A/B、排除"是不是 PT 这个变量"
-                    *  时用。用 `run-as` 改 `shared_prefs/options.xml` 即可，不给 UI。
-                    *  日志里 `Audio wire payload type ... wirePT=` 会写清实际发的是哪个。 */
-                   val audioRawWirePt:Boolean=false){
+                  /** 诊断开关：线上 RTP 的 PT 直接用 SETUP 的 raw stream type（旧行为）。
+                   *
+                   *  默认关 = 走规范映射 `raw102 → main(100)`，依据是发送侧 FourCC→PT 硬编码表
+                   *  `_carAudioStream_getRTPPayloadType`（`airplay_rtp_timing/analysis/03`
+                   *  **A03.1 CONFIRMED**：`'main'→100`，表里没有 `gen`；未命中返回入参本身）。
+                   *  旧映射 `raw102→gen(96)`（A01.5，INFERRED）已废除：实车 20022/20023 两次全哑。
+                   *  接收准入掩码 `0x3d13` 不含 102，发 102 会被车机在入口处就丢掉。
+                   *
+                   *  打开 = 恢复恒等映射，只在真机上需要做一次 A/B、排除"是不是 PT 这个变量"
+                   *  时用。用 `run-as` 改 `shared_prefs/options.xml` 即可，不给 UI。
+                   *  日志里 `Audio wire payload type ... wirePT=` 会写清实际发的是哪个。 */
+                  val audioRawWirePt:Boolean=false){
     /**
      * Name presented to the CarPlay receiver.
      *

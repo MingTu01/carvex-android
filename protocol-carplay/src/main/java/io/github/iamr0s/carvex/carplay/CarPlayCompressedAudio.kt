@@ -19,7 +19,7 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
     private val key:ByteArray,private val retransmit:AudioRtpRetransmit?,private val ownership:suspend ()->Unit,private val stopped:()->Unit,
     private val log:(String)->Unit,private val redEnabled:Boolean,
     private val canSend:()->Boolean,private val sapCrypto:SapAudioCrypto?,receiverHighAccuracyTimestamps:Boolean,
-    /** 线上 PT 逃生阀，见 [MediaAudioPackets.sapPacket]。null = 规范映射（raw102→96）。 */
+    /** 线上 PT 逃生阀，见 [MediaAudioPackets.sapPacket]。null = 规范映射（raw102→main 100）。 */
     private val wirePtOverride:Int?=null):NegotiatedAudioTransport {
     private val closed=AtomicBoolean(false)
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
@@ -56,7 +56,7 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
         val effectiveWirePt=MediaAudioPackets.wirePayloadType(streamType,wirePtOverride)
         log("Audio wire payload type category="+category+" rawType="+streamType+
             " wirePT="+effectiveWirePt+" override="+(wirePtOverride!=null)+" source="+
-            (if(wirePtOverride!=null)"raw-escape" else "spec(R-1.1 raw102->gen 96)"))
+            (if(wirePtOverride!=null)"raw-escape" else "spec(A03.1 raw102->main 100)"))
     }
     private fun failed(t:Throwable){
         if(closed.get())return

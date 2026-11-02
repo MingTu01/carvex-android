@@ -89,7 +89,7 @@ class CarPlaySourceIdentityTest {
         val payload=byteArrayOf(0x21,0x10,0x56)
         // 这条测的是 receiverOpen 那个 **Toyota AEAD 模型**「按 PT 字节选 AAD 长度」的性质，
         // 不是我们的线上 PT 映射。模型看到 PT=102 时恒用 8 字节 AAD，所以两种 build 声明都能开。
-        // 我们自己发 raw102 时线上 PT 是 96（见 MediaAudioPackets.wireType / R-1.1），
+        // 我们自己发 raw102 时线上 PT 是 100（见 MediaAudioPackets.wirePayloadType / rtp_timing A03.1），
         // 这里用 wirePtOverride 显式钉住 102，才能测到模型那条分支。
         val packet=MediaAudioPackets.accessUnit(payload,key,19,1024,5,102,wirePtOverride=102)
         assertArrayEquals(payload,receiverOpen(packet,"CP2A.260605.016"))

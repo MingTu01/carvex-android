@@ -33,17 +33,20 @@ class MediaAudioPacketsTest {
         assertEquals(101,packet[1].toInt() and 127)
         assertArrayEquals(byteArrayOf(0,1),Crypto.open(ByteArray(32),Crypto.nonce(56),packet.copyOfRange(12,packet.size-8),packet.copyOfRange(4,12)))
         assertThrows(IllegalArgumentException::class.java){MediaAudioPackets.packet(byteArrayOf(0,0),ByteArray(32),0,0,0,106)}
-        // raw102 的线上 PT 是 96（gen），不是 102。spec/01 R-1.1 级别 MUST NOT：SETUP 的
-        // raw stream type 与 RTP 的 PT 是两套编号；A01.5 的唯一已知二次映射是 raw102→gen(96)。
+        // raw102 的线上 PT 是 100（main），不是 102，也不是 96（gen）。spec/01 R-1.1
+        // 级别 MUST NOT：SETUP 的 raw stream type 与 RTP 的 PT 是两套编号。
+        // 依据是发送侧 FourCC→PT 硬编码表 `_carAudioStream_getRTPPayloadType`
+        // （rtp_timing analysis/03 A03.1 CONFIRMED）：'main'→100，表里没有 gen；
+        // 未命中返回入参本身（A03.2）⇒ 发送侧不存在产出 PT 96 的正规路径。
         // 102 不在接收准入掩码 0x3d13（R-1.2）里，发 102 会被车机在入口处丢掉。
-        assertEquals(96,MediaAudioPackets.packet(byteArrayOf(0,0),ByteArray(32),0,0,0,102)[1].toInt() and 127)
+        assertEquals(100,MediaAudioPackets.packet(byteArrayOf(0,0),ByteArray(32),0,0,0,102)[1].toInt() and 127)
         // main(100) 与标签表同名同值，保持不变。
         assertEquals(100,MediaAudioPackets.packet(byteArrayOf(0,0),ByteArray(32),0,0,0,100)[1].toInt() and 127)
         // 逃生阀：显式覆盖时按调用方给的 PT 发，只为真机 A/B 保留。
         assertEquals(102,MediaAudioPackets.packet(byteArrayOf(0,0),ByteArray(32),0,0,0,102,wirePtOverride=102)[1].toInt() and 127)
         // SAP 路线走同一个映射。
         val sap=MediaAudioPackets.sapPacket(byteArrayOf(0,0),SapAudioCrypto.plain(),0,0,102)
-        assertEquals(96,sap[1].toInt() and 127)
+        assertEquals(100,sap[1].toInt() and 127)
     }
     @Test fun malformedPcmAndSequenceCannotBeSent(){
         assertThrows(IllegalArgumentException::class.java){MediaAudioPackets.networkPcm(byteArrayOf(1))}
@@ -195,8 +198,8 @@ class MediaAudioPacketsTest {
         assertFalse(c1.copyOfRange(12,c1.size).contentEquals(c2.copyOfRange(12,c2.size)))
         // 输出必须就是同 key/iv 的一次 AES-CBC。
         assertArrayEquals(cbcEncrypt(key,iv,same),first.copyOfRange(12,first.size))
-        // raw102 的线上 PT 仍然走 R-1.1 的映射，与帧密码无关。
-        assertEquals(96,first[1].toInt() and 127)
+        // raw102 的线上 PT 仍然走 R-1.1 的映射（main=100），与帧密码无关。
+        assertEquals(100,first[1].toInt() and 127)
     }
 
     /** A-40 第 1/4 步：`full=len&~15`，只加密整块前缀，尾部 `len%16` 原样直通。 */

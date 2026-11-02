@@ -1255,7 +1255,8 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             else CarPlayCompressedAudio.create(udp,address,port,category,route.type,candidate,key,retransmit,takeOwnership,releaseStream,log,
                 canSend={!stopping&&(category==2||audioOwnership.allowsMainSend())},redEnabled=redEnabled,
                 receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps,sapCrypto=sapAudio,
-                // 线上 PT 默认走规范映射（raw102→gen 96，R-1.1）；audioRawWirePt 只用于真机 A/B。
+                // 线上 PT 默认走规范映射（raw102→main 100，rtp_timing A03.1 的发送侧
+                // FourCC→PT 硬编码表里没有 gen）；audioRawWirePt 只用于真机 A/B。
                 wirePtOverride=if(options.audioRawWirePt)route.type else null)
             transportRef.set(transport)
             val combined=microphone?.let{DuplexAudioTransport(transport,it)}?:transport

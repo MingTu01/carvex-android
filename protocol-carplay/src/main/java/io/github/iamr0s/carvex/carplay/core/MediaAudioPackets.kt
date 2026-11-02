@@ -16,28 +16,36 @@ object MediaAudioPackets {
     }
     /** 线上 PT 不是 SETUP 的 raw stream type，两套编号不能互换。
      *
-     *  `spec/01-audio-streams.md` **R-1.1，级别 MUST NOT**：「禁止把 `type=100` 直接当 PT 100 用」，
-     *  并且「唯一已知的二次映射是 `raw102` → `gen`(96)」（`A01.5`）。
-     *  发送侧标签→PT 表见 `analysis/02-codecs-and-rtp.md` §2.4：`gen`=96、`main`=100、`alt`=101。
-     *  接收准入掩码 `0x3d13`（R-1.2）里**根本没有 102**：pt ∈ {96,97,100,104,106,107,108,109}。
+     *  `spec/01-audio-streams.md` **R-1.1，级别 MUST NOT**：「禁止把 `type=100` 直接当 PT 100 用」；
+     *  `type=102` 更是从来就不是合法 PT —— 接收准入掩码 `0x3d13`（R-1.2）里没有 102，
+     *  发 102 会在车机入口处直接丢包。
      *
-     *  所以 raw102 必须发成 96；100/101 与标签表同名同值，保持原样。
+     *  **raw102 的线上 PT 是 100（`main`），不是 96（`gen`）**。硬证据是发送侧的
+     *  FourCC→PT 硬编码映射 `_carAudioStream_getRTPPayloadType`（`0x2519c1d5c`，
+     *  `airplay_rtp_timing/analysis/03` **A03.1 CONFIRMED**）：`'main'→100`、`'alt '→101`、
+     *  `'mred'→104`、`'ared'→105`、`'auxo'→106`、`'oovc'→107`、`'axrd'→108`、`'ovrd'→109`。
+     *  **表里没有 `gen`/`gred`**；未命中的四字符码记错误日志并把入参本身当返回值
+     *  （A03.2），也就是说发送侧根本不存在产出 PT 96 的正规路径。`main` 是
+     *  「主音频（媒体音与麦克风都走它）」（analysis/01 PT 表），媒体音（music）走它。
      *
-     *  这里走过两次回头路，记下来免得再走：
-     *  1) 初版写成恒等映射，注释还引了一个 `X-0029` 证据编号 —— 那个编号在整个
-     *     `research/` 里并不存在。后果是放音乐那条流（category=1，raw 102）线上 PT=102，
-     *     落在接收准入掩码之外，车机在**入口处就丢包**，表现是包在发、日志全绿、全程无声。
-     *  2) `b1cd2b2` 改对了，又被 `4ca82a6` 撤回。撤回理由是「接收端按 PT 字节选 AAD 长度，
-     *     发 96 会让 MAC 失败」—— 那条只对 **AEAD（ChaCha20-Poly1305）**成立，依据是
-     *     `CarPlaySourceIdentityTest.receiverOpen` 里 Toyota libAirPlay 的审计模型。
-     *     而 MFi/SAP 路线是 **AES-CTR**（06-frame-crypto-aes R-6.1：等长、无 tag、无 AAD），
-     *     明文诊断更是完全没有密码学，"MAC 失败"在这两条路上无从发生。
-     *     同一次撤回的另一条依据"音频和画面互斥"也已被 `660d2ba` 证伪。
-     *     两次撤回都没有真车证据，只有 PT=102 被反复实测为无声。
+     *  PT 96 `gen` 只出现在**接收侧**名字表（通用/screen 侧也用；R-2.7 的接收准入是
+     *  「条件（RED 时）」）。唯一的固定 0x60 出处在**转码调用链**（analysis/11 **A11.6**），
+     *  而 A11.6 明文写了「不推广为 CarPlay 当前必用链路」。
      *
-     *  [wirePtOverride] 是真机逃生阀：只有实车证实这台接收端确实要 raw PT 时才传，
-     *  用来做一次 A/B。默认走规范映射。 */
-    fun wirePayloadType(type:Int,wirePtOverride:Int?=null):Int=wirePtOverride?:if(type==102)96 else type
+     *  旧映射 `raw102→gen(96)`（A01.5）是 INFERRED，引证 RL-02 在整个 `research/` 里
+     *  不存在；实车又两次全哑（20022 CTR、20023 CBC-frame），已废除。这里走过三次
+     *  回头路，记下来免得再走：
+     *  1) 初版写成恒等映射（PT=102），注释还引了一个不存在的 `X-0029`。后果是包在
+     *     入口处就被准入掩码丢掉：包在发、日志全绿、全程无声，连明文诊断也无声。
+     *  2) `b1cd2b2`/`52732e4` 改成 96，依据是 A01.5/RL-02 的 INFERRED；实车 20022、
+     *     20023 两次全哑（CTR 与 CBC-frame 各一次）。车机还回过重传请求（diag20022），
+     *     说明包进了 RTP 会话、序号被解析，但没有走通到播放 —— 与「PT 被分派到
+     *     `gen` 管线、没进 `main` 播放管线」一致。
+     *  3) `4ca82a6` 撤回 PT 改动时的两条理由（「接收端按 PT 字节选 AAD 长度」只对
+     *     AEAD/ChaCha 成立；「音频和画面互斥」已被 `660d2ba` 证伪）都没有真车证据。
+     *
+     *  [wirePtOverride] 是真机逃生阀：只做一次 A/B 时传，不走规范映射。默认走 100。 */
+    fun wirePayloadType(type:Int,wirePtOverride:Int?=null):Int=wirePtOverride?:if(type==102)100 else type
     fun accessUnit(payload:ByteArray,key:ByteArray,sequence:Int,timestamp:Long,nonce:Long,type:Int,
                    wirePtOverride:Int?=null):ByteArray {
         require(type in setOf(100,101,102))
