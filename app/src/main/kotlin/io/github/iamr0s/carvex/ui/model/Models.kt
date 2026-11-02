@@ -88,6 +88,8 @@ data class Settings(
     val frontSurface: Boolean = false,
     /** 诊断：MFi/SAP 音频发明文，不做 AES-CTR。用来判定"没声音"是密码层错还是车机没在听。 */
     val audioPlaintext: Boolean = false,
+    /** 音频投送：真的对车机建立 CarPlay 音频流。默认关 —— 实车上"建音频"和"有画面"目前互斥。 */
+    val audioEnabled: Boolean = false,
     /** Enable navigation and voice-assistant audio output; disabled by default while the path is diagnosed. */
 )
 

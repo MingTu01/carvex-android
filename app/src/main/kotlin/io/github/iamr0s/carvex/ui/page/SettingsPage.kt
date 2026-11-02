@@ -141,6 +141,13 @@ fun SettingsPage(
                 color = cs.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
+            SwitchRow(stringResource(R.string.settings_audio_enabled), s.audioEnabled, vm::updateAudioEnabled)
+            Text(
+                stringResource(R.string.settings_audio_enabled_supporting),
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
             SwitchRow(stringResource(R.string.settings_audio_plaintext), s.audioPlaintext, vm::updateAudioPlaintext)
             Text(
                 stringResource(R.string.settings_audio_plaintext_supporting),

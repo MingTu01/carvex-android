@@ -243,6 +243,13 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(settings = it.settings.copy(frontSurface = enabled)) }
     }
 
+    /** 音频投送。默认关：打开后实车画面会停（见 Options.audioEnabled 的说明）。改动下一次连接生效。 */
+    fun updateAudioEnabled(enabled: Boolean) {
+        if (enabled == _state.value.settings.audioEnabled) return
+        BridgeStore.configure(BridgeStore.options.value.copy(audioEnabled = enabled))
+        _state.update { it.copy(settings = it.settings.copy(audioEnabled = enabled)) }
+    }
+
     /** MFi/SAP 音频明文直发（诊断用）。默认关，改动下一次连接生效。 */
     fun updateAudioPlaintext(enabled: Boolean) {
         if (enabled == _state.value.settings.audioPlaintext) return
@@ -312,6 +319,7 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         experimentalAuth = BridgeStore.options.value.experiment,
         frontSurface = BridgeStore.options.value.frontSurface,
         audioPlaintext = BridgeStore.options.value.audioPlaintext,
+        audioEnabled = BridgeStore.options.value.audioEnabled,
         autoReconnect = prefs.getBoolean("auto", true),
         connectOnLaunch = prefs.getBoolean("launch", false),
         keepScreenOn = prefs.getBoolean("awake", true),

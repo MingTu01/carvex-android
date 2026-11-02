@@ -171,5 +171,7 @@
     <string name="settings_front_surface_supporting">CarWith 接管画面后不会自己重绘，静止画面会让编码器停止输出、车机停在最后一帧。打开后每秒把手里那帧重新提交一次，换出一个小 P 帧维持画面流。代价是每帧一次拷贝和几帧延迟。</string>
     <string name="settings_audio_plaintext">音频明文直发（诊断）</string>
     <string name="settings_audio_plaintext_supporting">MFi/SAP 路线改为发送不加密的音频负载。用来判断"连上了但没声音"是密钥/加密格式不对，还是车机根本没在播这条流。正常情况下应当关闭。</string>
+    <string name="settings_audio_enabled">音频投送（实验）</string>
+    <string name="settings_audio_enabled_supporting">对车机建立 CarPlay 音频流。当前默认关闭：实车日志显示一旦音频流真的建起来，CarWith 的投屏画面就不再更新（车机上只剩一个图标），所以"有声音"和"有画面"目前是互斥的。打开它可以单独排查音频，但要有画面不出来的预期。</string>
     <string name="airplay_security_automatic">安全流程由程序按内部支持配置自动选择；缺少适用配置或认证材料时会说明原因。</string>
 </resources>

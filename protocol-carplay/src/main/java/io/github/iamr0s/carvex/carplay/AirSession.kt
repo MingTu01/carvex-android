@@ -1068,6 +1068,12 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         // （AirPlaySender 0x2519c0acc → 返回 0），所以"我们发了密文、车机按明文解"是可能的状态，
         // 而它在日志上完全无声无息。这一步只用来判定密码层，不改变默认行为。
         val sapAudio=if(homeKitSecret==null){
+            // 实车回归的分界线就在这里。2026-11-02 18:13 那次画面正常（只差声音）时，这个分支
+            // 抛的就是下面这句，三条音频全部 3ms 内失败，视频随后稳定 30fps；
+            // 换成"能建就建"之后音频 SETUP 全部 200，但 CarWith 的虚拟屏从此一帧不提交，
+            // 车机上只剩一个图标。所以默认走回这条，把画面先拿稳。见 Options.audioEnabled。
+            if(!options.audioEnabled)
+                throw UnsupportedOperationException("Audio RTP profile requires HomeKit; MFiSAP audio is not established")
             val cipher=if(options.audioPlaintext)null else mfi?.streamCipher(id)
             if(cipher==null&&!options.audioPlaintext)
                 throw UnsupportedOperationException("Audio RTP profile requires HomeKit or MFi/SAP key material")
