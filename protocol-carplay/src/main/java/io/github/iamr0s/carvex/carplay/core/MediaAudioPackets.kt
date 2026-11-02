@@ -9,28 +9,41 @@ object MediaAudioPackets {
         require(pcm16le.size%2==0)
         return pcm16le.copyOf().also{for(i in it.indices step 2){val first=it[i];it[i]=it[i+1];it[i+1]=first}}
     }
-    fun packet(pcm16be:ByteArray,key:ByteArray,sequence:Int,timestamp:Long,nonce:Long,type:Int=100):ByteArray {
+    fun packet(pcm16be:ByteArray,key:ByteArray,sequence:Int,timestamp:Long,nonce:Long,type:Int=100,
+               wirePtOverride:Int?=null):ByteArray {
         require(pcm16be.size%2==0)
-        return accessUnit(pcm16be,key,sequence,timestamp,nonce,type)
+        return accessUnit(pcm16be,key,sequence,timestamp,nonce,type,wirePtOverride)
     }
-    /** 线上 PT 保持等于流类型。
+    /** 线上 PT 不是 SETUP 的 raw stream type，两套编号不能互换。
      *
-     *  曾短暂改成 `102→96`（依据 `spec/01-audio-streams.md` R-1.1「禁止把 type 当 PT」+
-     *  `analysis/02-codecs-and-rtp.md` §2.4 的 `gen`=96 + `A01.5` 的 `raw102→gen(96)`）。**已撤回**：
-     *  接收端的 AAD 分支是**按收到的 PT 字节**选的，见 `CarPlaySourceIdentityTest.receiverOpen`
-     *  （Toyota libAirPlay 审计模型：`aadStart = if(type==102 || modernBuild) 4 else 0`）。
-     *  发 96 会让接收端改用 12 字节 AAD，而我们封的是 8 字节，MAC 必然失败、音频被静默丢弃。
+     *  `spec/01-audio-streams.md` **R-1.1，级别 MUST NOT**：「禁止把 `type=100` 直接当 PT 100 用」，
+     *  并且「唯一已知的二次映射是 `raw102` → `gen`(96)」（`A01.5`）。
+     *  发送侧标签→PT 表见 `analysis/02-codecs-and-rtp.md` §2.4：`gen`=96、`main`=100、`alt`=101。
+     *  接收准入掩码 `0x3d13`（R-1.2）里**根本没有 102**：pt ∈ {96,97,100,104,106,107,108,109}。
      *
-     *  所以在这台车机上，102 同时承担两个角色：它既是 SETUP 的 `MainHighAudio` 流类型，
-     *  也是接收端识别"gen 流、8 字节 AAD"的标记。R-1.1 说的"不要互换"在这个接收端上并不成立，
-     *  这是一处真实的接收端实现与规范文字的冲突，按接收端行为走。
+     *  所以 raw102 必须发成 96；100/101 与标签表同名同值，保持原样。
      *
-     *  注意：早先这行注释引用的证据编号 `X-0029` 在整个 `research/` 里并不存在（已删除该引用）。 */
-    private fun wireType(type:Int)=type
-    fun accessUnit(payload:ByteArray,key:ByteArray,sequence:Int,timestamp:Long,nonce:Long,type:Int):ByteArray {
+     *  这里走过两次回头路，记下来免得再走：
+     *  1) 初版写成恒等映射，注释还引了一个 `X-0029` 证据编号 —— 那个编号在整个
+     *     `research/` 里并不存在。后果是放音乐那条流（category=1，raw 102）线上 PT=102，
+     *     落在接收准入掩码之外，车机在**入口处就丢包**，表现是包在发、日志全绿、全程无声。
+     *  2) `b1cd2b2` 改对了，又被 `4ca82a6` 撤回。撤回理由是「接收端按 PT 字节选 AAD 长度，
+     *     发 96 会让 MAC 失败」—— 那条只对 **AEAD（ChaCha20-Poly1305）**成立，依据是
+     *     `CarPlaySourceIdentityTest.receiverOpen` 里 Toyota libAirPlay 的审计模型。
+     *     而 MFi/SAP 路线是 **AES-CTR**（06-frame-crypto-aes R-6.1：等长、无 tag、无 AAD），
+     *     明文诊断更是完全没有密码学，"MAC 失败"在这两条路上无从发生。
+     *     同一次撤回的另一条依据"音频和画面互斥"也已被 `660d2ba` 证伪。
+     *     两次撤回都没有真车证据，只有 PT=102 被反复实测为无声。
+     *
+     *  [wirePtOverride] 是真机逃生阀：只有实车证实这台接收端确实要 raw PT 时才传，
+     *  用来做一次 A/B。默认走规范映射。 */
+    fun wirePayloadType(type:Int,wirePtOverride:Int?=null):Int=wirePtOverride?:if(type==102)96 else type
+    fun accessUnit(payload:ByteArray,key:ByteArray,sequence:Int,timestamp:Long,nonce:Long,type:Int,
+                   wirePtOverride:Int?=null):ByteArray {
         require(type in setOf(100,101,102))
         require(key.size==32&&sequence in 0..65535&&nonce>=0&&payload.isNotEmpty()&&payload.size<=1400)
-        val pt=wireType(type)
+        val pt=wirePayloadType(type,wirePtOverride)
+        require(pt in 0..127){"Wire payload type out of range: "+pt}
         val header=ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN).put(0x80.toByte()).put(pt.toByte())
             .putShort(sequence.toShort()).putInt(timestamp.toInt()).putInt(0).array()
         val iv=Crypto.nonce(nonce)
@@ -47,10 +60,12 @@ object MediaAudioPackets {
      *  这里只做了“头部不变、密码学换成 MFi 流密钥”这一处最小改动，没有新增头部字段，
      *  也没有假定 tag/nonce 存在。真机不接受时，第一步该看的不是公式，而是这里的选择。
      */
-    fun sapPacket(payload:ByteArray,crypto:SapAudioCrypto,sequence:Int,timestamp:Long,type:Int):ByteArray {
+    fun sapPacket(payload:ByteArray,crypto:SapAudioCrypto,sequence:Int,timestamp:Long,type:Int,
+                  wirePtOverride:Int?=null):ByteArray {
         require(type in setOf(100,101,102))
         require(sequence in 0..65535&&payload.isNotEmpty()&&payload.size<=1400)
-        val pt=wireType(type)
+        val pt=wirePayloadType(type,wirePtOverride)
+        require(pt in 0..127){"Wire payload type out of range: "+pt}
         val header=ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN).put(0x80.toByte()).put(pt.toByte())
             .putShort(sequence.toShort()).putInt(timestamp.toInt()).putInt(0).array()
         // 计数器由调用方持有的同一个 Cipher 推进：跨包连续，不在这里重置。
@@ -73,10 +88,10 @@ object MediaAudioPackets {
     }
     /** RED 封包：头是明文，历史块+当前块整体加密一次（ch08 §3.3）。 */
     fun redPacket(payload:ByteArray,history:ByteArray?,historyTimestamp:Long?,key:ByteArray,
-                  sequence:Int,timestamp:Long,nonce:Long,type:Int):ByteArray {
+                  sequence:Int,timestamp:Long,nonce:Long,type:Int,wirePtOverride:Int?=null):ByteArray {
         require(type in setOf(100,101,102))
         require(key.size==32&&sequence in 0..65535&&nonce>=0&&payload.isNotEmpty()&&payload.size<=1400)
-        val primaryType=wireType(type)
+        val primaryType=wirePayloadType(type,wirePtOverride)
         val red=redType(type)
         val header=ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN).put(0x80.toByte()).put(red.toByte())
             .putShort(sequence.toShort()).putInt(timestamp.toInt()).putInt(0).array()

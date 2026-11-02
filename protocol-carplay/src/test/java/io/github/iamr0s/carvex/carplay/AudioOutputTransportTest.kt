@@ -111,7 +111,7 @@ class AudioOutputTransportTest {
                 assertEquals(1,(sequence(second)-sequence(first)) and 65535)
                 assertEquals(240L,(timestamp(second)-timestamp(first)) and 0xffffffffL)
                 for((index,packet) in socket.packets.withIndex()){
-                    assertEquals(type,packet[1].toInt() and 127)
+                    assertEquals(MediaAudioPackets.wirePayloadType(type),packet[1].toInt() and 127)
                     val nonce=ByteBuffer.wrap(packet,packet.size-8,8).order(ByteOrder.LITTLE_ENDIAN).long
                     assertEquals(index.toLong(),nonce)
                     val plain=Crypto.open(key,Crypto.nonce(nonce),packet.copyOfRange(12,packet.size-8),packet.copyOfRange(4,12))
@@ -127,7 +127,7 @@ class AudioOutputTransportTest {
         try{
             audio.send(1,ByteArray(packetBytes),format)
             assertEquals(1,socket.packets.size);assertEquals(1L,audio.packetsSent)
-            assertEquals(102,socket.packets.single()[1].toInt() and 127)
+            assertEquals(MediaAudioPackets.wirePayloadType(102),socket.packets.single()[1].toInt() and 127)
         }finally{audio.close()}
     }
 
@@ -245,7 +245,7 @@ class AudioOutputTransportTest {
                 assertEquals(1L,audio.packetsSent);assertEquals(1,socket.packets.size)
                 val packet=socket.packets.single()
                 val red=type!=102&&peerRed==true
-                assertEquals(if(red)MediaAudioPackets.redType(type) else type,packet[1].toInt() and 127)
+                assertEquals(if(red)MediaAudioPackets.redType(type) else MediaAudioPackets.wirePayloadType(type),packet[1].toInt() and 127)
                 if(red)assertEquals(type,packet[12].toInt() and 255)
                 val payloadOffset=if(red)13 else 12
                 val nonce=ByteBuffer.wrap(packet,packet.size-8,8).order(ByteOrder.LITTLE_ENDIAN).long

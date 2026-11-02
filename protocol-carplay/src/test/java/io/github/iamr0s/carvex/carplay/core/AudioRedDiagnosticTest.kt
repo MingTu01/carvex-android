@@ -106,7 +106,7 @@ class AudioRedDiagnosticTest {
     @Test fun plainMetadataHasNoRedOrOpusFieldsForAac(){
         val actual=packet(AudioRedDiagnostic(true,1,CarPlayAudioPlan.Codec.AAC_LC,false),type=102)
         val info=requireNotNull(AudioPacketDiagnostics(false,CarPlayAudioPlan.Codec.AAC_LC).sent(actual,opus,1024,0))
-        assertEquals(102,info.outerPt);assertNull(info.innerPt);assertNull(info.opusToc)
+        assertEquals(MediaAudioPackets.wirePayloadType(102),info.outerPt);assertNull(info.innerPt);assertNull(info.opusToc)
         assertNull(info.historyOffset);assertEquals(0,info.historyBytes)
     }
 

@@ -71,7 +71,17 @@ data class Options(val appearance:Appearance=Appearance.SYSTEM,val color:Int=DEF
                     *  AirPlay 的收端音量是**发送方**设的（dB，-144 约等于静音）。如果车机在收到
                     *  音量命令前一直保持静音，表现就是"流正常、包在发、日志全绿、就是没声"——
                     *  和密文解不开的样子一模一样。NaN = 不发（默认，保持原有行为）。 */
-                   val audioVolumeDb:Double=Double.NaN){
+                   val audioVolumeDb:Double=Double.NaN,
+                   /** 诊断开关：线上 RTP 的 PT 直接用 SETUP 的 raw stream type（旧行为）。
+                    *
+                    *  默认关 = 走规范映射 `raw102 → gen(96)`，见 `spec/01-audio-streams.md`
+                    *  **R-1.1（MUST NOT 互换）** 与 `A01.5`。接收准入掩码 `0x3d13` 不含 102，
+                    *  发 102 会被车机在入口处就丢掉。
+                    *
+                    *  打开 = 恢复恒等映射，只在真机上需要做一次 A/B、排除"是不是 PT 这个变量"
+                    *  时用。用 `run-as` 改 `shared_prefs/options.xml` 即可，不给 UI。
+                    *  日志里 `Audio wire payload type ... wirePT=` 会写清实际发的是哪个。 */
+                   val audioRawWirePt:Boolean=false){
     /**
      * Name presented to the CarPlay receiver.
      *
@@ -167,7 +177,8 @@ object BridgeStore {
             p.getString("deviceName",default.deviceName)?:"",p.getBoolean("bindNetwork",default.bindNetwork),p.getBoolean("frontSurface",default.frontSurface),
             p.getBoolean("autoConnect",default.autoConnect),p.getBoolean("audioPlaintext",default.audioPlaintext),
             p.getBoolean("audioEnabled",default.audioEnabled),
-            p.getFloat("audioVolumeDb",default.audioVolumeDb.toFloat()).toDouble())
+            p.getFloat("audioVolumeDb",default.audioVolumeDb.toFloat()).toDouble(),
+            p.getBoolean("audioRawWirePt",default.audioRawWirePt))
         scope.launch {
             val f=File(context.filesDir,"diagnostic.log")
             val saved=synchronized(logFileLock){
@@ -235,6 +246,7 @@ object BridgeStore {
             .putBoolean("audioEnabled",normalized.audioEnabled)
             // NaN 落盘会变成 Float.NaN，读回来还是 NaN，正好当"不发音量命令"的哨兵值。
             .putFloat("audioVolumeDb",normalized.audioVolumeDb.toFloat())
+            .putBoolean("audioRawWirePt",normalized.audioRawWirePt)
             .remove("pairingPin").remove("airPlaySecurity").apply()
     }
     @Synchronized fun update(id:String,transform:(SessionState)->SessionState){if(mutable.value.id==id)mutable.value=transform(mutable.value)}

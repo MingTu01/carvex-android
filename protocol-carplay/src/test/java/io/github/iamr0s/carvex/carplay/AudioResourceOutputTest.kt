@@ -1,6 +1,7 @@
 package io.github.iamr0s.carvex.carplay
 
 import io.github.iamr0s.carvex.pcm.PcmFormat
+import io.github.iamr0s.carvex.carplay.core.MediaAudioPackets
 import io.github.iamr0s.carvex.carplay.core.ScreenResourceModes
 import io.github.iamr0s.carvex.sessioncore.MainAudioOwnership
 import kotlinx.coroutines.runBlocking
@@ -51,7 +52,7 @@ class AudioResourceOutputTest {
             assertEquals(101,alt.data[1].toInt() and 127)
             held.set(false);main.send(1,ByteArray(960),format)
             val received=DatagramPacket(ByteArray(2048),2048);mainReceiver.receive(received)
-            assertEquals(102,received.data[1].toInt() and 127);assertEquals(1,leases.get())
+            assertEquals(MediaAudioPackets.wirePayloadType(102),received.data[1].toInt() and 127);assertEquals(1,leases.get())
             held.set(true);main.send(1,ByteArray(960),format)
             assertThrows(SocketTimeoutException::class.java){mainReceiver.receive(DatagramPacket(ByteArray(2048),2048))}
         }finally{main.close();alternate.close();mainReceiver.close();alternateReceiver.close()}

@@ -143,7 +143,7 @@ class CarPlayAudioPlanTest {
             val accessUnit=byteArrayOf(0x78,1,2,3)
             val packet=MediaAudioPackets.accessUnit(accessUnit,key,7,960,0,route.type)
             // 线上 PT 必须等于流类型：接收端用这个字节判断 AAD 长度（见 CarPlaySourceIdentityTest）。
-            assertEquals(route.type,packet[1].toInt() and 127)
+            assertEquals(MediaAudioPackets.wirePayloadType(route.type),packet[1].toInt() and 127)
             assertArrayEquals(accessUnit,Crypto.open(key,Crypto.nonce(0),
                 packet.copyOfRange(12,packet.size-8),packet.copyOfRange(4,12)))
         }

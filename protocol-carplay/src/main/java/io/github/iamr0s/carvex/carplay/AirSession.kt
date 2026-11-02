@@ -1185,7 +1185,10 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                     else->e.key.toString()+"="+v}})
             // An offer in our request is not an enabled mode. Firmware treats a missing
             // or false reply as ordinary cumulative-sample timing for main/alt output.
-            if(category==1)announceVolume(control)
+            // 音量命令不挡 SETUP 热路径：它只是收端增益，晚几十毫秒到没有差别，
+            // 但在这里做一次额外 RTSP 往返会把后面的建流排在它后面。RtspClient 按 seq
+            // 分发响应、写侧只串行化 write，所以并发发一条 SET_PARAMETER 是安全的。
+            if(category==1)scope.launch{announceVolume(control)}
             val receiverHighAccuracyTimestamps=AudioRtpTimestampClock.receiverSupportsHighAccuracy(stream)
             val clockFields=listOf("sampleTime","timestamp","timestampRawNs","audioLatencyMs")
                 .mapNotNull{name->(stream[name] as? Number)?.let{"$name=$it"}}.joinToString(",").ifEmpty{"none"}
@@ -1236,7 +1239,9 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             }
             else CarPlayCompressedAudio.create(udp,address,port,category,route.type,candidate,key,retransmit,takeOwnership,releaseStream,log,
                 canSend={!stopping&&(category==2||audioOwnership.allowsMainSend())},redEnabled=redEnabled,
-                receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps,sapCrypto=sapAudio)
+                receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps,sapCrypto=sapAudio,
+                // 线上 PT 默认走规范映射（raw102→gen 96，R-1.1）；audioRawWirePt 只用于真机 A/B。
+                wirePtOverride=if(options.audioRawWirePt)route.type else null)
             transportRef.set(transport)
             val combined=microphone?.let{DuplexAudioTransport(transport,it)}?:transport
             audioTransports[category]=transport
@@ -1376,18 +1381,15 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
     private var aes:javax.crypto.Cipher?=null
     /** 音量命令每个会话只发一次（再补一次延迟重发），别让它成为每类音频的重复动作。 */
     private val volumeAnnounced=java.util.concurrent.atomic.AtomicBoolean()
-    /** AirPlay 的收端音量由发送方设定：`SET_PARAMETER /volume`，单位 dB，-144 约等于静音。 */
+    /** AirPlay 的收端音量由发送方设定：`SET_PARAMETER /volume`，单位 dB，-144 约等于静音。
+     *  只发一次、不重发。固定延迟的无条件重发属于盲试（AGENT.md §3）；音量是幂等的状态
+     *  设置，丢了就丢了，不该用重发去掩盖，也不该让它占住 SETUP 热路径。 */
     private suspend fun announceVolume(control:RtspClient){
         val db=options.audioVolumeDb
         if(db.isNaN()||!volumeAnnounced.compareAndSet(false,true))return
-        suspend fun send(stage:String){
-            runCatching{control.plist("SET_PARAMETER",connectionPath?:"/",mapOf("volume" to db))}
-                .onSuccess{log("Audio volume announced stage="+stage+" volume="+db+"dB accepted")}
-                .onFailure{log("Audio volume announcement failed stage="+stage+": "+it.javaClass.simpleName+" "+(it.message?:""))}
-        }
-        send("setup")
-        // 车机可能要在流真正开始后才采纳音量，隔一秒再补一次。
-        scope.launch{delay(1000);send("retry")}
+        runCatching{control.plist("SET_PARAMETER",connectionPath?:"/",mapOf("volume" to db))}
+            .onSuccess{log("Audio volume announced volume="+db+"dB accepted")}
+            .onFailure{log("Audio volume announcement failed: "+it.javaClass.simpleName+" "+(it.message?:""))}
     }
     /** 拆屏幕流：文档 06 章 §2.5 要求"先注销本地流、再发 TEARDOWN"，失败不回滚注销。
      *  正文是 `streams` 数组；`teardownType` 是固件里的**条件字段**（会话 `+0x10 != 0` 才写），

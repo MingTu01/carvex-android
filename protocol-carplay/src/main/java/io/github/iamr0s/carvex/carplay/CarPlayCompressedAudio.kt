@@ -18,7 +18,9 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
     private val port:Int,private val category:Int,private val streamType:Int,private val selected:CarPlayAudioPlan.Format,
     private val key:ByteArray,private val retransmit:AudioRtpRetransmit?,private val ownership:suspend ()->Unit,private val stopped:()->Unit,
     private val log:(String)->Unit,private val redEnabled:Boolean,
-    private val canSend:()->Boolean,private val sapCrypto:SapAudioCrypto?,receiverHighAccuracyTimestamps:Boolean):NegotiatedAudioTransport {
+    private val canSend:()->Boolean,private val sapCrypto:SapAudioCrypto?,receiverHighAccuracyTimestamps:Boolean,
+    /** 线上 PT 逃生阀，见 [MediaAudioPackets.sapPacket]。null = 规范映射（raw102→96）。 */
+    private val wirePtOverride:Int?=null):NegotiatedAudioTransport {
     private val closed=AtomicBoolean(false)
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val output=Channel<CompressedAudioEncoder.Event>(8)
@@ -49,6 +51,12 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
         if(sapCrypto!=null)log("Audio crypto category="+category+" mode="+
             (if(sapCrypto.plaintext)"PLAINTEXT(MFi/SAP diagnostic)" else "AES-CTR(MFi/SAP)")+
             " redEnabled="+redEnabled+" payloadOnly=true tagBytes=0 nonceTail=0; MFi audio wire profile has no packet-capture evidence")
+        // 线上 PT 与 SETUP 的 raw type 是两套编号（R-1.1 MUST NOT 互换）。
+        // 这行必须打：没有它就分不清日志里的 type=102 到底是流类型还是线上 PT。
+        val effectiveWirePt=MediaAudioPackets.wirePayloadType(streamType,wirePtOverride)
+        log("Audio wire payload type category="+category+" rawType="+streamType+
+            " wirePT="+effectiveWirePt+" override="+(wirePtOverride!=null)+" source="+
+            (if(wirePtOverride!=null)"raw-escape" else "spec(R-1.1 raw102->gen 96)"))
     }
     private fun failed(t:Throwable){
         if(closed.get())return
@@ -120,7 +128,7 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
                             // CTR 没有 tag/nonce，ChaCha 的 nonce 计数在这里没有意义；
                             // 计数器由 sapCrypto 里的 Cipher 自己推进，不需要每包换 IV。
                             check(!redEnabled){"SAP audio has no RED record implementation"}
-                            MediaAudioPackets.sapPacket(event.bytes,sapCrypto,sequence,timestamp,streamType)
+                            MediaAudioPackets.sapPacket(event.bytes,sapCrypto,sequence,timestamp,streamType,wirePtOverride)
                         }else{
                             check(nonce<Long.MAX_VALUE){"Audio nonce exhausted"}
                             redDiagnostic.packet(event.bytes,history,historyTimestamp,key,sequence,timestamp,nonce++,streamType)
@@ -161,9 +169,10 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
         suspend fun create(socket:DatagramSocket,peer:InetAddress,port:Int,category:Int,type:Int,
             format:CarPlayAudioPlan.Format,key:ByteArray,retransmit:AudioRtpRetransmit?,ownership:suspend ()->Unit,stopped:()->Unit,
             log:(String)->Unit,canSend:()->Boolean={true},redEnabled:Boolean=false,
-            receiverHighAccuracyTimestamps:Boolean=false,sapCrypto:SapAudioCrypto?=null):CarPlayCompressedAudio {
+            receiverHighAccuracyTimestamps:Boolean=false,sapCrypto:SapAudioCrypto?=null,
+            wirePtOverride:Int?=null):CarPlayCompressedAudio {
             require(format.codec in setOf(CarPlayAudioPlan.Codec.AAC_LC,CarPlayAudioPlan.Codec.AAC_ELD,CarPlayAudioPlan.Codec.OPUS))
-            val transport=CarPlayCompressedAudio(socket,peer,port,category,type,format,key,retransmit,ownership,stopped,log,redEnabled,canSend,sapCrypto,receiverHighAccuracyTimestamps)
+            val transport=CarPlayCompressedAudio(socket,peer,port,category,type,format,key,retransmit,ownership,stopped,log,redEnabled,canSend,sapCrypto,receiverHighAccuracyTimestamps,wirePtOverride)
             val bitrate=when(format.codec){CarPlayAudioPlan.Codec.AAC_LC->192000;CarPlayAudioPlan.Codec.AAC_ELD->if(format.rate<=24000)48000 else 96000;else->if(format.rate<=24000)48000 else 96000}
             try{
                 log("Audio RED diagnostic category="+category+" codec="+format.codec+" negotiatedRED="+redEnabled+

@@ -3,6 +3,7 @@ package io.github.iamr0s.carvex.carplay
 import io.github.iamr0s.carvex.carplay.core.AudioRtpTimestampClock
 import io.github.iamr0s.carvex.carplay.core.CarPlayAudioPlan
 import io.github.iamr0s.carvex.carplay.core.Crypto
+import io.github.iamr0s.carvex.carplay.core.MediaAudioPackets
 import io.github.iamr0s.carvex.carplay.core.carplay.BuildConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -71,11 +72,12 @@ class CompressedAudioTimestampTest {
                 logs.trySend(line);Unit
             }
             // Bypass only MediaCodec creation, not packetization, pacing, gates or UDP sends.
-            // 15 个参数：新增的 sapCipher 传 null，本组用例走 HomeKit 路线。
-            val constructor=CarPlayCompressedAudio::class.java.declaredConstructors.single{it.parameterCount==15}
+            // 16 个参数：sapCipher 传 null（本组用例走 HomeKit 路线），
+            // wirePtOverride 传 null（线上 PT 走规范映射 raw102→gen 96，见 MediaAudioPackets.wirePayloadType）。
+            val constructor=CarPlayCompressedAudio::class.java.declaredConstructors.single{it.parameterCount==16}
             constructor.isAccessible=true
             audio=constructor.newInstance(socket,peer,12345,category,type,format,key,retransmit,
-                ownership,onStopped,logger,red,canSend,null,highAccuracy) as CarPlayCompressedAudio
+                ownership,onStopped,logger,red,canSend,null,highAccuracy,null) as CarPlayCompressedAudio
             @Suppress("UNCHECKED_CAST")
             output=field(audio,"output") as Channel<CompressedAudioEncoder.Event>
             CarPlayCompressedAudio::class.java.getDeclaredMethod("startWriter").also{
@@ -122,7 +124,7 @@ class CompressedAudioTimestampTest {
                 assertEquals(writer.format.framesPerPacket.toLong(),timestamp(second))
                 assertEquals(1,(sequence(second)-sequence(first)) and 65535)
                 for((index,packet) in writer.socket.packets.withIndex()){
-                    assertEquals(type,packet[1].toInt() and 127)
+                    assertEquals(MediaAudioPackets.wirePayloadType(type),packet[1].toInt() and 127)
                     assertEquals(index.toLong(),nonce(packet))
                     assertArrayEquals(accessUnit,Crypto.open(writer.key,Crypto.nonce(nonce(packet)),
                         packet.copyOfRange(12,packet.size-8),packet.copyOfRange(4,12)))
@@ -202,7 +204,7 @@ class CompressedAudioTimestampTest {
                 assertEquals((initialSequence+2) and 65535,field(writer.audio,"sequence"))
                 assertEquals(2L,field(writer.audio,"nonce"));assertEquals(2,cacheSize(writer.retransmit))
                 for((index,packet) in writer.socket.packets.withIndex()){
-                    assertEquals(if(red)type+4 else type,packet[1].toInt() and 127)
+                    assertEquals(if(red)type+4 else MediaAudioPackets.wirePayloadType(type),packet[1].toInt() and 127)
                     assertEquals(index.toLong(),nonce(packet));assertEquals(index*960L,timestamp(packet))
                     // Respect the separately retained build option in both build variants.
                     val history=red&&index>0&&!BuildConfig.CARPLAY_PRIMARY_ONLY_RED
