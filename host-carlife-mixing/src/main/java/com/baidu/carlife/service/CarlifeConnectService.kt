@@ -15,6 +15,8 @@ class CarlifeConnectService:Service() {
     private val binder=Binder()
     private var disconnectJob:Job?=null
     private var sessionJob:Job?=null
+    /** 本进程里是否已经满足过 startForegroundService 的 5 秒契约；见 [beginForeground]。 */
+    private var foregroundStarted=false
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
     override fun onCreate(){
         super.onCreate()
@@ -34,6 +36,8 @@ class CarlifeConnectService:Service() {
         // 落在任何提前返回之前：被拒的请求也要留痕。
         delegate.log("entry","Intent extras: "+(intent?.describeExtras()?:"none"))
         val internal=intent?.getStringExtra("internal_token")==token(this)
+        // 前台化必须是这里的第一件事，排在**所有**提前返回之前。理由见 beginForeground。
+        beginForeground(if(internal&&intent?.action==STOP)"正在断开" else "准备连接")
         if(internal&&intent?.action==STOP){
             // 用户点"断开"是明确意图，必须留住：否则 CarWith 会在几百毫秒后再发一次
             // host 意图把我们拉起来（实车 11:29:44 断开 → 11:29:44.88 就又收到了 host 意图），
@@ -47,6 +51,7 @@ class CarlifeConnectService:Service() {
             }
             return START_NOT_STICKY
         }
+        // 这里不能 stopForeground：断开流程还在跑，撤掉前台通知会让系统有机会在 TEARDOWN 中途杀掉服务。
         if(disconnectJob?.isActive==true){delegate.log("entry","Connection request ignored while disconnecting");return START_NOT_STICKY}
         val hostRequest = delegate.brand.acceptsHostIntent(
             intent?.getStringExtra("bindPackageName"),
@@ -55,7 +60,9 @@ class CarlifeConnectService:Service() {
             intent?.getIntExtra("usb_type", -1) ?: -1,
             intent?.getBooleanExtra("is_box", false) ?: false,
         )
-        if(!((internal&&intent?.action==CONNECT)||hostRequest)){delegate.log("entry","Unsupported or invalid service entry");if(!controller.active&&sessionJob?.isActive!=true)stopSelf(startId);return START_NOT_STICKY}
+        // 拒绝的入口一律 stopSelf() 而不是 stopSelf(startId)：startId 不是最新一次时前者什么也不会做，
+        // 服务会带着一条前台通知一直挂着。契约已经在 beginForeground 里满足了，这里可以放心退。
+        if(!((internal&&intent?.action==CONNECT)||hostRequest)){delegate.log("entry","Unsupported or invalid service entry");if(!controller.active&&sessionJob?.isActive!=true){stopForeground(STOP_FOREGROUND_REMOVE);stopSelf()};return START_NOT_STICKY}
         if(internal&&intent?.action==CONNECT)clearUserStop()
         // 只有"宿主自己找上门"的入口会被这道闩挡住；用户在本应用里点连接走的是 internal CONNECT，
         // 不受影响。窗口有限而不是永久：CarWith 发起的连接本身就是正常用法，永久拉黑会让那条路彻底废掉。
@@ -63,14 +70,30 @@ class CarlifeConnectService:Service() {
             val left=userStopRemainingMs()
             if(left>0L){
                 delegate.log("entry","Host-initiated connection ignored: the user disconnected "+((USER_STOP_GRACE_MS-left)/1000)+"s ago")
-                stopSelf(startId);return START_NOT_STICKY
+                stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();return START_NOT_STICKY
             }
         }
         val missing=delegate.missingPermissions()
-        if(missing.isNotEmpty()){delegate.log("entry","Required permission missing: "+missing.joinToString());stopSelf(startId);return START_NOT_STICKY}
-        try{startForeground(1,notification("准备连接"))}catch(t:Exception){delegate.log("entry","Foreground start failed "+t.javaClass.simpleName);stopSelf(startId);return START_NOT_STICKY}
+        if(missing.isNotEmpty()){delegate.log("entry","Required permission missing: "+missing.joinToString());stopForeground(STOP_FOREGROUND_REMOVE);stopSelf();return START_NOT_STICKY}
         if(!controller.active&&sessionJob?.isActive!=true)startSession(hostRequest)
         return START_NOT_STICKY
+    }
+    /** `startForegroundService()` 的 5 秒契约必须无条件先满足。
+     *
+     *  系统在 `startForeground()` 被调用前只给 5 秒；超时就抛
+     *  `RemoteServiceException$ForegroundServiceDidNotStartInTimeException` 并且**直接杀掉整个进程**。
+     *  实车 2026-11-02 19:57:57 / 19:58:37 / 19:59:17 连续三次的"崩溃"就是它，栈顶写得很清楚：
+     *  `ServiceRecord{... com.baidu.carlife.service.CarlifeConnectService c:com.miui.carlink}`。
+     *
+     *  起因是本方法里每一条提前返回都排在 `startForeground()` 之前。最要命的是用户点"断开"那条：
+     *  它要先把 `controller.disconnect()` 的 TEARDOWN 走完才 `stopSelf()`，远不止 5 秒。
+     *  把前台化提到最前面以后，拒绝路径再用 `stopForeground`+`stopSelf` 干净退出即可，不会再触发超时。
+     *
+     *  `stopSelf(startId)` 在 startId 不是最新一次时并不会停掉服务，所以"拒绝"分支不能指望它兜住契约。 */
+    private fun beginForeground(text:String){
+        if(foregroundStarted)return
+        try{startForeground(1,notification(text));foregroundStarted=true}
+        catch(t:Exception){delegate.log("entry","Foreground start failed "+t.javaClass.simpleName+" "+(t.message?:""))}
     }
     /** The application owns preparation and session implementation; the service owns their lifetime. */
     private fun startSession(hostRequest:Boolean){
