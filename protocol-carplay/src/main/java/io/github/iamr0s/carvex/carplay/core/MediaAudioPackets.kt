@@ -114,17 +114,67 @@ object MediaAudioPackets {
     }
 }
 
-/** MFi/SAP 音频发送侧的密码上下文。
+/** MFi/SAP 音频发送侧的帧密码上下文。
  *
- *  [cipher] 非空 = 走 AES-CTR（06-frame-crypto-aes R-6.1，等长、无 tag、计数器跨包连续）。
- *  [cipher] 为空 = **诊断用的明文直发**：12 字节头照旧，payload 原样送出。
+ *  帧密码**不是全局一种**，由 raw stream type 在 G=0 下的分派表决定。
+ *  证据：`research/protocol/airplay_fairplay_crypto/analysis/14-cryptor-gates-and-output-slots.md`
+ *  **A-44**（`0x2519bca6c..bd120`，36 个原指令锚点，C14 `verify_cryptor_dispatch.py`）：
  *
- *  为什么需要这个空档：SETUP 被接受只证明车机愿意收这条流，不证明它能解开。
- *  接收端固件在 `stream+0xa0` 没有密码器时是**直接放行明文并返回成功**的
- *  （AirPlaySender 0x2519c0acc → 返回 0），所以"车机没给音频装解密器、我们却发了密文"
- *  是完全可能的状态，而它在日志上表现为一切正常、只是没声音。
- *  真机上一旦确认改用明文能出声，就说明线上格式该按明文定稿，而不是继续调 CTR。 */
-class SapAudioCrypto(private val cipher:Cipher?) {
-    val plaintext:Boolean get()=cipher==null
-    fun apply(payload:ByteArray):ByteArray=cipher?.update(payload)?:payload
+ *  | type | G=0 | G≠0 |
+ *  |---|---|---|
+ *  | 96/102/103 | **A=CBCFrame** | A=ChaCha(flag=1) |
+ *  | 100/101/106/107 | 不建密码器 | ChaCha |
+ *  | 110/111（屏幕） | **A=CTR** | A=ChaCha(flag=0) |
+ *
+ *  实车对照已经把这张表验证了一半：视频是 MainScreen/AltScreen（110/111），走 CTR
+ *  就出画面；媒体音是 MainHighAudio（102），**G=0 下该走 CBCFrame**，此前用 CTR
+ *  表现为包在发、日志全绿、全程无声。G≠0（CoreUtils 配对）对应 HomeKit/HAP 的
+ *  ChaCha 路线，本类不覆盖。
+ *
+ *  G=0 由实车反证：视频用 CTR 通了，而 A-44 里 110/111 只在 G=0 给 CTR。
+ *  密钥材料与视频完全同源（`Mfi.streamFrameKeyIv` = A-46 的 Sender Legacy KDF），
+ *  换的只有帧密码。
+ *
+ *  - [Mode.CTR]：128 位大端计数器跨包连续（A-41）。
+ *  - [Mode.CBC_FRAME]：每次 Update 用**同一个初始 IV** 重置、整块 CBC、尾部直通
+ *    （A-40 / spec06 R-6.3）。不是链接上一包的末密文块，也不是 PKCS#7。
+ *  - [Mode.PLAINTEXT]：诊断档，12 字节头照旧、正文原样。依据是接收端在 stream+0xa0
+ *    没有密码器时直接放行明文并返回成功（AirPlaySender `0x2519c0acc` → 0），
+ *    所以"我们发密文、车机按明文解"是可能状态，日志上完全无声无息。
+ */
+class SapAudioCrypto private constructor(val mode:Mode,private val ctr:Cipher?,
+    private val cbcKey:ByteArray?,private val cbcIv:ByteArray?) {
+    enum class Mode{PLAINTEXT,CTR,CBC_FRAME}
+    val plaintext:Boolean get()=mode==Mode.PLAINTEXT
+    /** 诊断串，用于把 A/B 的自变量钉在日志上。 */
+    val modeName:String get()=when(mode){Mode.PLAINTEXT->"PLAINTEXT";Mode.CTR->"AES-CTR";Mode.CBC_FRAME->"AES-CBC-frame"}
+    private var cbc:Cipher?=null
+    fun apply(payload:ByteArray):ByteArray=when(mode){
+        Mode.PLAINTEXT->payload
+        Mode.CTR->requireNotNull(ctr).update(payload)
+        Mode.CBC_FRAME->cbcFrame(payload)
+    }
+    /** AES-CBC-frame（A-40）：`full=len&~15`，只加密整块前缀，尾部 `len%16` 原样直通。
+     *  长度 <16 时 `full=0`，整段直通。每次调用都用保存的初始 IV 重置，不链接上一调用。 */
+    private fun cbcFrame(payload:ByteArray):ByteArray{
+        val full=payload.size and 0x7ffffff0
+        if(full==0)return payload.copyOf()
+        val c=cbc?:Cipher.getInstance("AES/CBC/NoPadding").also{cbc=it}
+        // init() 就是 A-40 第 2 步的 CCCryptorReset(ctx, 保存的初始 IV)：
+        // 同一 key/IV 下相同输入得到相同输出，不把上一包的末密文块链进来。
+        c.init(Cipher.ENCRYPT_MODE,javax.crypto.spec.SecretKeySpec(requireNotNull(cbcKey),"AES"),
+            javax.crypto.spec.IvParameterSpec(requireNotNull(cbcIv)))
+        val head=c.doFinal(payload,0,full)
+        check(head.size==full){"AES-CBC-frame produced ${head.size} bytes for full="+full}
+        return head+payload.copyOfRange(full,payload.size)
+    }
+    companion object{
+        fun plain()=SapAudioCrypto(Mode.PLAINTEXT,null,null,null)
+        fun ctr(cipher:Cipher)=SapAudioCrypto(Mode.CTR,cipher,null,null)
+        /** AES-CBC-frame：key/iv 各 16B（A-42 固定 128 位，R-6.5）。 */
+        fun cbcFrame(key:ByteArray,iv:ByteArray):SapAudioCrypto{
+            require(key.size==16&&iv.size==16){"CBC-frame requires a 16-byte key and a 16-byte IV"}
+            return SapAudioCrypto(Mode.CBC_FRAME,null,key.copyOf(),iv.copyOf())
+        }
+    }
 }

@@ -1074,10 +1074,25 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             // 车机上只剩一个图标。所以默认走回这条，把画面先拿稳。见 Options.audioEnabled。
             if(!options.audioEnabled)
                 throw UnsupportedOperationException("Audio RTP profile requires HomeKit; MFiSAP audio is not established")
-            val cipher=if(options.audioPlaintext)null else mfi?.streamCipher(id)
-            if(cipher==null&&!options.audioPlaintext)
-                throw UnsupportedOperationException("Audio RTP profile requires HomeKit or MFi/SAP key material")
-            SapAudioCrypto(cipher)
+            // 帧密码按 A-44 的 type/G 分派表选，不是全局一种（表见 SapAudioCrypto）：
+            //   type 96/102/103 在 G=0 → CBCFrame；type 110/111 在 G=0 → CTR。
+            // 本会话是 MFi/SAP（Legacy provider，G=0）——视频用 CTR 能出画面就是 G=0 的实证，
+            // 因为 A-44 里 110/111 只在 G=0 给 CTR。媒体音是 MainHighAudio(102)，
+            // 帧密码必须是 CBCFrame；此前用 CTR 表现为包在发、日志全绿、全程无声。
+            // 本次真机实验只动这一处变量。raw100/101 在 G=0 下 A-44 说是「不建密码器」，
+            // 属于下一次单独验证，本次保持原样，不一起改。
+            // 先固定下来：`mfi` 是可变的类属性，Kotlin 不对它做智能转换（同 `shared`）。
+            val mfiMaterial=mfi
+            val built=when{
+                options.audioPlaintext->SapAudioCrypto.plain()
+                mfiMaterial==null->throw UnsupportedOperationException("Audio RTP profile requires HomeKit or MFi/SAP key material")
+                route.type==102->{
+                    val (frameKey,frameIv)=mfiMaterial.streamFrameKeyIv(id)
+                    SapAudioCrypto.cbcFrame(frameKey,frameIv)
+                }
+                else->SapAudioCrypto.ctr(mfiMaterial.streamCipher(id))
+            }
+            built
         }else null
         if(sapAudio?.plaintext==true)
             log("Audio category="+category+" MFi/SAP diagnostic: payload sent as PLAINTEXT; this run cannot confirm the AES-CTR wire format")

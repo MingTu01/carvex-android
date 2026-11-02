@@ -42,7 +42,7 @@ class MediaAudioPacketsTest {
         // 逃生阀：显式覆盖时按调用方给的 PT 发，只为真机 A/B 保留。
         assertEquals(102,MediaAudioPackets.packet(byteArrayOf(0,0),ByteArray(32),0,0,0,102,wirePtOverride=102)[1].toInt() and 127)
         // SAP 路线走同一个映射。
-        val sap=MediaAudioPackets.sapPacket(byteArrayOf(0,0),SapAudioCrypto(null),0,0,102)
+        val sap=MediaAudioPackets.sapPacket(byteArrayOf(0,0),SapAudioCrypto.plain(),0,0,102)
         assertEquals(96,sap[1].toInt() and 127)
     }
     @Test fun malformedPcmAndSequenceCannotBeSent(){
@@ -127,7 +127,7 @@ class MediaAudioPacketsTest {
         val material=ByteArray(16){it.toByte()}
         val payload=byteArrayOf(1,2,3,4)
         val sap=MediaAudioPackets.sapPacket(payload,
-            SapAudioCrypto(sapCipher(7,material,javax.crypto.Cipher.ENCRYPT_MODE)),9,0x11223344L,100)
+            SapAudioCrypto.ctr(sapCipher(7,material,javax.crypto.Cipher.ENCRYPT_MODE)),9,0x11223344L,100)
         val hap=MediaAudioPackets.packet(payload,ByteArray(32),9,0x11223344L,0,100)
         // 两条路线共用同一套头：换的只是密码学，不是封装。
         assertArrayEquals(hap.copyOfRange(0,12),sap.copyOfRange(0,12))
@@ -138,7 +138,7 @@ class MediaAudioPacketsTest {
     }
     @Test fun sapPacketRunsOneContinuousCounterAcrossPackets(){
         val material=ByteArray(16){it.toByte()}
-        val sender=SapAudioCrypto(sapCipher(7,material,javax.crypto.Cipher.ENCRYPT_MODE))
+        val sender=SapAudioCrypto.ctr(sapCipher(7,material,javax.crypto.Cipher.ENCRYPT_MODE))
         val same=byteArrayOf(9,9,9,9)
         val first=MediaAudioPackets.sapPacket(same,sender,1,100L,100)
         val second=MediaAudioPackets.sapPacket(same,sender,2,101L,100)
@@ -150,7 +150,7 @@ class MediaAudioPacketsTest {
         assertArrayEquals(same,receiver.update(second.copyOfRange(12,second.size)))
     }
     @Test fun sapPacketRejectsUnknownTypesAndOversizedPayload(){
-        val cipher=SapAudioCrypto(sapCipher(7,ByteArray(16),javax.crypto.Cipher.ENCRYPT_MODE))
+        val cipher=SapAudioCrypto.ctr(sapCipher(7,ByteArray(16),javax.crypto.Cipher.ENCRYPT_MODE))
         assertThrows(IllegalArgumentException::class.java){
             MediaAudioPackets.sapPacket(byteArrayOf(1,2),cipher,0,0,106)}
         assertThrows(IllegalArgumentException::class.java){
@@ -163,13 +163,72 @@ class MediaAudioPacketsTest {
         // 依据是接收端固件在 stream+0xa0 没有密码器时直接放行明文（0x2519c0acc → 返回 0），
         // 所以"头不变、正文原样"是一个真实可能被车机接受的状态，而不是随便漏掉加密。
         val payload=byteArrayOf(1,2,3,4,5,6)
-        val plain=MediaAudioPackets.sapPacket(payload,SapAudioCrypto(null),9,0x11223344L,100)
+        val plain=MediaAudioPackets.sapPacket(payload,SapAudioCrypto.plain(),9,0x11223344L,100)
         val encrypted=MediaAudioPackets.sapPacket(payload,
-            SapAudioCrypto(sapCipher(7,ByteArray(16){it.toByte()},javax.crypto.Cipher.ENCRYPT_MODE)),9,0x11223344L,100)
+            SapAudioCrypto.ctr(sapCipher(7,ByteArray(16){it.toByte()},javax.crypto.Cipher.ENCRYPT_MODE)),9,0x11223344L,100)
         assertArrayEquals(encrypted.copyOfRange(0,12),plain.copyOfRange(0,12))
         assertArrayEquals(payload,plain.copyOfRange(12,plain.size))
         assertEquals(12+payload.size,plain.size)
-        assertTrue(SapAudioCrypto(null).plaintext)
-        assertFalse(SapAudioCrypto(sapCipher(7,ByteArray(16),javax.crypto.Cipher.ENCRYPT_MODE)).plaintext)
+        assertTrue(SapAudioCrypto.plain().plaintext)
+        assertFalse(SapAudioCrypto.ctr(sapCipher(7,ByteArray(16),javax.crypto.Cipher.ENCRYPT_MODE)).plaintext)
+    }
+
+    /** 参照加密：AES/CBC/NoPadding，一次整块，用来核对 CBC-frame 的输出确实就是它。 */
+    private fun cbcEncrypt(key:ByteArray,iv:ByteArray,block:ByteArray)=javax.crypto.Cipher
+        .getInstance("AES/CBC/NoPadding").apply{
+            init(javax.crypto.Cipher.ENCRYPT_MODE,javax.crypto.spec.SecretKeySpec(key,"AES"),
+                javax.crypto.spec.IvParameterSpec(iv))}.doFinal(block)
+
+    /** A-40 / spec06 R-6.3：CBC-frame 每次 Update 用**保存的初始 IV** 重置，
+     *  不链接上一包的末密文块。所以同 key/iv/明文 → 同密文，与 CTR 的"必须不同"正好相反。 */
+    @Test fun cbcFrameResetsIvPerPacketInsteadOfChaining(){
+        val key=ByteArray(16){it.toByte()};val iv=ByteArray(16){(it+3).toByte()}
+        val sender=SapAudioCrypto.cbcFrame(key,iv)
+        val same=byteArrayOf(9,8,7,6,5,4,3,2,1,0,1,2,3,4,5,6)   // 16B = 恰好一块
+        val first=MediaAudioPackets.sapPacket(same,sender,1,100L,102)
+        val second=MediaAudioPackets.sapPacket(same,sender,2,101L,102)
+        assertArrayEquals(first.copyOfRange(12,first.size),second.copyOfRange(12,second.size))
+        // 与 CTR 对照：CTR 的计数器跨包推进，同样两包必须不同（见上面的连续计数器测试）。
+        val ctr=SapAudioCrypto.ctr(sapCipher(7,ByteArray(16){it.toByte()},javax.crypto.Cipher.ENCRYPT_MODE))
+        val c1=MediaAudioPackets.sapPacket(same,ctr,1,100L,102)
+        val c2=MediaAudioPackets.sapPacket(same,ctr,2,101L,102)
+        assertFalse(c1.copyOfRange(12,c1.size).contentEquals(c2.copyOfRange(12,c2.size)))
+        // 输出必须就是同 key/iv 的一次 AES-CBC。
+        assertArrayEquals(cbcEncrypt(key,iv,same),first.copyOfRange(12,first.size))
+        // raw102 的线上 PT 仍然走 R-1.1 的映射，与帧密码无关。
+        assertEquals(96,first[1].toInt() and 127)
+    }
+
+    /** A-40 第 1/4 步：`full=len&~15`，只加密整块前缀，尾部 `len%16` 原样直通。 */
+    @Test fun cbcFrameEncryptsOnlyWholeBlocksAndPassesTheTailThrough(){
+        val key=ByteArray(16){it.toByte()};val iv=ByteArray(16){(it*3).toByte()}
+        val sender=SapAudioCrypto.cbcFrame(key,iv)
+        val payload=ByteArray(20){(it*7+1).toByte()}              // 16 + 4
+        val packet=MediaAudioPackets.sapPacket(payload,sender,1,0L,102)
+        // 等长：没有 tag、没有 padding 块、没有 nonce 尾。
+        assertEquals(12+payload.size,packet.size)
+        val body=packet.copyOfRange(12,packet.size)
+        // 整块前缀 = 一次 AES-CBC；尾部 4 字节逐字节相同。
+        assertArrayEquals(cbcEncrypt(key,iv,payload.copyOfRange(0,16)),body.copyOfRange(0,16))
+        assertArrayEquals(payload.copyOfRange(16,20),body.copyOfRange(16,20))
+    }
+
+    /** A-40：长度 <16 时 `full=0`，整段直通，不加密也不报错。 */
+    @Test fun cbcFrameShortPayloadsPassThroughUntouched(){
+        val key=ByteArray(16){it.toByte()};val iv=ByteArray(16){it.toByte()}
+        val sender=SapAudioCrypto.cbcFrame(key,iv)
+        for(size in 1..15){
+            val payload=ByteArray(size){(it+1).toByte()}
+            val packet=MediaAudioPackets.sapPacket(payload,sender,1,0L,102)
+            assertEquals(12+size,packet.size)
+            assertArrayEquals(payload,packet.copyOfRange(12,packet.size))
+        }
+    }
+
+    /** A-42 / R-6.5：key/iv 必须恰好 16B，不提供 AES192/256。 */
+    @Test fun cbcFrameRejectsWrongKeyOrIvSizes(){
+        assertThrows(IllegalArgumentException::class.java){SapAudioCrypto.cbcFrame(ByteArray(32),ByteArray(16))}
+        assertThrows(IllegalArgumentException::class.java){SapAudioCrypto.cbcFrame(ByteArray(16),ByteArray(24))}
+        assertThrows(IllegalArgumentException::class.java){SapAudioCrypto.cbcFrame(ByteArray(0),ByteArray(16))}
     }
 }

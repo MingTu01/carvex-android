@@ -48,9 +48,9 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
         log("Audio RTP clock category="+category+" type="+streamType+
             " peerHighAccuracy="+receiverHighAccuracyTimestamps+" timestampMode="+rtpClock.mode.diagnosticName+
             "; source pacing independent; high-accuracy network-clock anchors not implemented")
-        if(sapCrypto!=null)log("Audio crypto category="+category+" mode="+
-            (if(sapCrypto.plaintext)"PLAINTEXT(MFi/SAP diagnostic)" else "AES-CTR(MFi/SAP)")+
-            " redEnabled="+redEnabled+" payloadOnly=true tagBytes=0 nonceTail=0; MFi audio wire profile has no packet-capture evidence")
+        if(sapCrypto!=null)log("Audio crypto category="+category+" mode="+sapCrypto.modeName+"(MFi/SAP)"+
+            (if(sapCrypto.plaintext)" diagnostic" else "")+
+            " redEnabled="+redEnabled+" payloadOnly=true tagBytes=0 nonceTail=0; frame cipher follows A-44 type/G dispatch")
         // 线上 PT 与 SETUP 的 raw type 是两套编号（R-1.1 MUST NOT 互换）。
         // 这行必须打：没有它就分不清日志里的 type=102 到底是流类型还是线上 PT。
         val effectiveWirePt=MediaAudioPackets.wirePayloadType(streamType,wirePtOverride)
@@ -125,8 +125,9 @@ class CarPlayCompressedAudio private constructor(private val socket:DatagramSock
                         // from the SETUP reply. No unsent AU consumes the continuous RTP clock.
                         val timestamp=rtpClock.timestamp(plan.timestamp)
                         val packet=if(sapCrypto!=null){
-                            // CTR 没有 tag/nonce，ChaCha 的 nonce 计数在这里没有意义；
-                            // 计数器由 sapCrypto 里的 Cipher 自己推进，不需要每包换 IV。
+                            // 两种帧密码都等长、无 tag、无 nonce 尾，所以 12 字节头之后只跟正文。
+                            // CTR 的计数器由 sapCrypto 里的 Cipher 跨包连续推进；CBC-frame 反过来，
+                            // 每个 AU 都用同一个初始 IV 重置（A-40），互不链接。IV 演进在 SapAudioCrypto 里。
                             check(!redEnabled){"SAP audio has no RED record implementation"}
                             MediaAudioPackets.sapPacket(event.bytes,sapCrypto,sequence,timestamp,streamType,wirePtOverride)
                         }else{

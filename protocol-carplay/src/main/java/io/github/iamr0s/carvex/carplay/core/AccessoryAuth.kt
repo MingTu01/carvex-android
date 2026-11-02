@@ -146,10 +146,19 @@ object AccessoryAuth {
         return byteArrayOf(0x30,body.size.toByte())+body
     }
     data class Mfi(val key:ByteArray,val iv:ByteArray,val wrapped:ByteArray) {
-        fun streamCipher(id:Long):Cipher {
-            fun derive(label:String)=Crypto.hash((label+id).toByteArray(Charsets.US_ASCII),key).copyOf(16)
-            return Cipher.getInstance("AES/CTR/NoPadding").apply{init(Cipher.ENCRYPT_MODE,SecretKeySpec(derive("AirPlayStreamKey"),"AES"),IvParameterSpec(derive("AirPlayStreamIV")))}
-        }
+        /** Sender Legacy KDF（A-46，`0x251aa97a0`/`0x251aa9a60`）：
+         *  `SHA512(name ‖ dec(id) ‖ masterKey16)[0:16]`，name 取 `AirPlayStreamKey` / `AirPlayStreamIV`。
+         *  视频与音频共用同一套材料；两条路线只在**帧密码**上分开。 */
+        private fun derive(id:Long,label:String)=Crypto.hash((label+id).toByteArray(Charsets.US_ASCII),key).copyOf(16)
+        /** 屏幕流（110/111）在 G=0 下走 CTR（A-44）：128 位大端计数器跨包连续（A-41）。 */
+        fun streamCipher(id:Long):Cipher =
+            Cipher.getInstance("AES/CTR/NoPadding").apply{init(Cipher.ENCRYPT_MODE,
+                SecretKeySpec(derive(id,"AirPlayStreamKey"),"AES"),IvParameterSpec(derive(id,"AirPlayStreamIV")))}
+        /** 音频流（96/102/103）在 G=0 下走 **CBCFrame**（A-44），不是 CTR。
+         *  只取出 key/iv 两个 16B 材料（A-45：CBC 获取方法收 key/iv 两个 CFData 出参；
+         *  A-42：固定 128 位）。帧语义见 `MediaAudioPackets.SapAudioCrypto`。 */
+        fun streamFrameKeyIv(id:Long):Pair<ByteArray,ByteArray> =
+            derive(id,"AirPlayStreamKey") to derive(id,"AirPlayStreamIV")
     }
     /** Explicit local compatibility contract; complete production SAP trust remains unavailable. */
     enum class SapSignatureSchema { EXPERIMENTAL_RSA_PKCS1_SHA1_PUBLIC_KEYS_V1 }
