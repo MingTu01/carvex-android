@@ -222,6 +222,8 @@ class SessionController(
         val musicLock=Any()
         val latestMusic=AtomicReference<NowPlayingUpdate.Track?>(null)
         val musicAir=AtomicReference<AirSession?>(null)
+        /** 导航语音被丢弃时那行日志的上次打印时刻；导航期 PCM 回调约 12 次/秒，不限流会冲掉日志。 */
+        val navAudioDropLogAt=java.util.concurrent.atomic.AtomicLong(0)
         /** 宿主推过音乐信息吗？推过就以宿主为准，别让手机侧的数据源把它盖掉。 */
         val hostMusicSeen=AtomicBoolean(false)
         /** 手机侧「正在播放」数据源（通知使用权）。宿主不推时由它补位。 */
@@ -1044,12 +1046,21 @@ class SessionController(
             phase(Stage.SETUP,70000){
                 val completions=ConcurrentHashMap<Int,CompletableDeferred<Unit>>()
                 fun requestAudio(category:Int,firstPcm:ByteArray,pcmFormat:PcmFormat,prime:Boolean=false):Boolean {
-                    // 诊断开关：完全丢弃导航语音（category 2），连 SETUP 都不发。
-                    // 见 AudioDebugConfig.navAudio —— 用来单变量验证"导航那一刻这次注定失败的
-                    // SETUP 是否就是车机收走触摸的触发点"。返回 true 表示我们已接管这段音频，
-                    // 调用方不会把它转去手机本机播放。
-                    if(category==2&&!io.github.iamr0s.carvex.carplay.core.AudioDebugConfig.navAudio){
-                        BridgeStore.log(id,"Audio category=2 dropped by navAudio=false; no SETUP attempted")
+                    // 结构性约束：category 2（导航语音）**禁止在会话中途做 SETUP**。
+                    //
+                    // 2026-11-03 真车证实这是触屏失效的根因：导航开始那一刻的这次 SETUP 会让
+                    // 车机交出输入焦点且永不归还；拦掉它之后触摸全程正常（会话 2f8114ca，
+                    // 97 条报告横跨导航前后）。会话建立阶段的预热（prime=true）是安全的，
+                    // 所以只封中途这一条路，不封预热。详见 AudioDebugConfig.navAudio。
+                    //
+                    // 返回 true = 这段音频由我们接管（丢弃），调用方不会转去手机本机播放。
+                    if(category==2&&!prime&&!io.github.iamr0s.carvex.carplay.core.AudioDebugConfig.navAudio){
+                        // 导航语音的 PCM 回调很密（约 12 次/秒）。每次打一行会把 1MB 的
+                        // diagnostic.log 冲掉，真正有用的行反而看不到，所以这里限流到 5 秒一行。
+                        val now=System.nanoTime()
+                        val last=navAudioDropLogAt.get()
+                        if(now-last>5_000_000_000L&&navAudioDropLogAt.compareAndSet(last,now))
+                            BridgeStore.log(id,"Audio category=2 mid-session demand dropped: a SETUP here costs the car's input focus (car-verified); prewarm only")
                         return true
                     }
                     val ticket=if(prime)audioDemand.prime(category,pcmFormat)

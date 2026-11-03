@@ -72,18 +72,23 @@ object AudioDebugConfig {
      *  关掉它就回到"语音只认 `100/speechRecognition`"的旧行为，用于真车 A/B。 */
     @Volatile var speechAltPcm: Boolean = true
 
-    /** 导航语音（category 2）整条丢弃：连 SETUP 都不发，只记一行日志。
+    /** 允许导航语音（category 2）在**会话中途**做 SETUP。默认 **false**，不要随便打开。
      *
-     *  存在的理由（2026-11-03 真车诊断）：每次点"开始导航"，最先发生的事不是导航通知，
-     *  而是 category 2 要流 —— 而它**每次都失败**：
-     *  ```
-     *  14:49:36.53  category=2 selected type=100/alert    → SETUP 400
-     *  14:49:36.60  → 回退 101/default                    → activation failed
-     *  14:49:36.62  mix_notify_start_navi（导航动作比它晚 0.1 秒）
-     *  ```
-     *  而最后一条触摸就停在这之前。所以要单独验：这次注定失败的 SETUP 本身，是不是就是
-     *  车机收走触摸的触发点。`pcmAlert` 拦不住它（那个只改编码偏好，不改路径）。
+     *  【真车结论，2026-11-03 会话 `2f8114ca`】这一条是触屏失效的根因。
      *
-     *  关掉它 = 导航期间完全没有导航语音（现在本来也听不到），用来做单变量 A/B。 */
-    @Volatile var navAudio: Boolean = true
+     *  每次点"开始导航"，最先发生的不是导航通知，而是 category 2 要流：
+     *  ```
+     *  14:49:36.53  category=2 selected 100/alert → SETUP 400 → 回退 101/default → 激活失败
+     *  14:49:36.62  mix_notify_start_navi（比音频晚 0.1 秒）
+     *  ```
+     *  而车机一旦为语音让出输入焦点就**再也不还回来**，现象就是"一开导航触屏就死"。
+     *  这和历史记录里小爱（cat3）那个坑是同一个机制，当初的修法就是不让它去抢。
+     *
+     *  单变量验证（同一次装包、同一台车、基线核实过）：
+     *  - 拦掉这次 SETUP（`navAudio=false`）：导航开始后触摸照常，97 条报告横跨 15:15:31→15:17:12
+     *  - 放开：导航一开始触摸就归零，退出导航也不恢复
+     *
+     *  所以这个开关只在**复现问题**时打开。正常运行路径上，category 2 只允许会话建立阶段的
+     *  预热（`prime=true`）—— 那次 SETUP 是安全的，日志里 15:15:23 被接受后触摸照常。 */
+    @Volatile var navAudio: Boolean = false
 }

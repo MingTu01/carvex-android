@@ -113,10 +113,10 @@ class AudioDebugReceiver : BroadcastReceiver() {
             sb.append(" volumeDb=$v")
             changed = true
         }
-        // navAudio: 导航语音（category 2）整条丢弃，连 SETUP 都不发（默认 true = 正常处理）。
-        // 用于验证"导航开始那次注定失败的 SETUP 是否就是触摸消失的触发点"。
+        // navAudio: 允许导航语音（category 2）在会话中途做 SETUP。默认 false = 禁止。
+        // 打开它会让车机交出输入焦点、触屏失效（真车已验证），只在复现问题时用。
         if (intent.hasExtra("navAudio")) {
-            val v = intent.getBooleanExtra("navAudio", true)
+            val v = intent.getBooleanExtra("navAudio", false)
             AudioDebugConfig.navAudio = v
             editor.putBoolean("audioNavAudio", v)
             sb.append(" navAudio=$v")
