@@ -59,8 +59,29 @@ class SessionController(
      *
      *  必须是**控制器字段**而不是重试循环里的局部变量：CarWith 重新绑定会再调一次 `start()`，
      *  那会起一个新的循环。20032 的真机日志就是这样丢了标记 —— NO_SYN 之后 320ms 就有一个
-     *  新 `start()`，于是刷新永远不触发。这里让它在控制器生命周期内累积。 */
+     *  新 `start()`，于是刷新永远不触发。这里让它在控制器生命周期内累积。
+     *
+     *  **只放实例字段还不够（2026-11-03 真车 build 20046 抓到）**：一次 NO_SYN 之后，
+     *  `startSession` 的收集器会 `stopSelf()`，CarWith 又立刻把服务拉起来 —— 而服务重建就换了
+     *  一个**新的 SessionController**，实例字段上的标记跟着一起丢：
+     *
+     *  ```
+     *  15:47:21.527  [9e426d3e] iAP NO_SYN: no peer SYN within 7000ms
+     *  15:47:21.884  [fc72f979] ... freshness=unverified   ← 新控制器，标记没了
+     *  15:47:29.247  [fc72f979] iAP NO_SYN
+     *  15:47:29.614  [2e9e9492] ... freshness=unverified
+     *  ```
+     *
+     *  所以真正的判据要落盘（带 10 分钟时效，避免一次 NO_SYN 让之后每次重连都多付一次 SDP 往返）。 */
     @Volatile private var refreshSdpAfterNoSyn=false
+    /** NO_SYN 落盘标记；见 [refreshSdpAfterNoSyn]。 */
+    private fun noSynMarkerAt():Long =
+        context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).getLong(KEY_NO_SYN_AT,0L)
+    private fun markNoSyn(){
+        refreshSdpAfterNoSyn=true
+        context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
+            .putLong(KEY_NO_SYN_AT,System.currentTimeMillis()).apply()
+    }
     private var carPlayAudioTestJob:Job?=null
     private var carWithAudioProbeJob:Job?=null
     private data class AudioProbeSample(val category:Int,val rate:Int,val channels:Int,val bytes:Int,val nonzero:Boolean)
@@ -86,6 +107,15 @@ class SessionController(
         // Checked here so a disabled adapter fails before the host is bound and an audio route is requested.
         val adapter=context.getSystemService(BluetoothManager::class.java)?.adapter
         if(adapter==null||!adapter.isEnabled){reject("蓝牙未开启：请先在系统设置中打开蓝牙，再回到本页连接");return}
+        // 上一次 NO_SYN 可能是**别的控制器实例**留下的（服务被 CarWith 拉起重启过），
+        // 所以判据要落盘读回来；10 分钟时效避免让之后每次重连都白付一次 SDP 往返。
+        if(!refreshSdpAfterNoSyn){
+            val at=noSynMarkerAt()
+            if(at!=0L&&System.currentTimeMillis()-at<NO_SYN_REFRESH_WINDOW_MS){
+                refreshSdpAfterNoSyn=true
+                BridgeStore.log(BridgeStore.state.value.id,"NO_SYN seen "+((System.currentTimeMillis()-at)/1000)+"s ago; refreshing SDP before this attempt")
+            }
+        }
         job=scope.launch {
             var attempt=0
             while(isActive){
@@ -98,9 +128,10 @@ class SessionController(
                     currentCoroutineContext().ensureActive()
                     BridgeStore.log(id,"failure: "+t.javaClass.simpleName+" "+(t.message?:""))
                     // 一旦确认缓存通道号坏过就一直刷新，不在后续失败里又退回旧缓存。
-                    refreshSdpAfterNoSyn=refreshSdpAfterNoSyn||generateSequence<Throwable>(t){it.cause}.any{cause->
+                    val noSyn=generateSequence<Throwable>(t){it.cause}.any{cause->
                         cause is java.net.SocketTimeoutException&&cause.message?.contains("NO_SYN")==true
                     }
+                    if(noSyn){markNoSyn();BridgeStore.log(id,"iAP NO_SYN: the car still holds the previous session; refreshing SDP and retrying until it releases")}
                     // 空消息的异常（例如候选为空时抛的那条 IllegalStateException）只靠类型无法定位，把栈截断打出来。
                     BridgeStore.log(id,"failure stack: "+t.stackTraceToString().take(2048))
                     BridgeStore.log(id,ProtocolTrace.event(BridgeStore.state.value.stage.name,"session","local","attempt","failed",t.javaClass.simpleName))
@@ -116,7 +147,9 @@ class SessionController(
                         BridgeStore.update(id){it.copy(stage=Stage.FAILED,detail="在 "+it.stage.title+" 阶段失败",error=BridgeStore.redact(t.message?:t.javaClass.simpleName))}
                         break
                     }
-                    BridgeStore.update(id){it.copy(stage=Stage.RETRY,detail="资源已释放，等待恢复连接",error=BridgeStore.redact(t.message?:"连接中断"))}
+                    BridgeStore.update(id){it.copy(stage=Stage.RETRY,
+                        detail=if(noSyn)"车机仍在释放上一个会话（通常 3 分钟内自动恢复）" else "资源已释放，等待恢复连接",
+                        error=BridgeStore.redact(t.message?:"连接中断"))}
                     delay(options.retryIntervalSeconds*1000L)
                 }
             }
@@ -1287,3 +1320,9 @@ class SessionController(
         disconnecting=false
     }
 }
+
+/** NO_SYN 标记落盘位置（跨服务/控制器实例）；见 [SessionController.refreshSdpAfterNoSyn]。 */
+private const val PREFS_SESSION="session"
+private const val KEY_NO_SYN_AT="no_syn_at"
+/** NO_SYN 之后多久之内认为"缓存通道号仍然可疑"。 */
+private const val NO_SYN_REFRESH_WINDOW_MS=10*60_000L
