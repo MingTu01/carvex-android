@@ -98,6 +98,8 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         extraThreads={listOfNotNull(client?.diagnosticReaderThread())})
     /** `/info.hidDevices[].uuid` 里登记过的设备；SETUP 之后逐个武装（第 10 章 §2.6）。 */
     private val hidArmUuids=java.util.Collections.synchronizedList(mutableListOf<String>())
+    /** 上一次重新武装 HID 输入模式的时刻（nanoTime）；0 表示还没试过。见 [rearmHidInput]。 */
+    private val hidRearmAt=java.util.concurrent.atomic.AtomicLong(0)
     /** HID 报告计数：用来在本次会话的第一条报告上留一条"通道已通"的痕迹。 */
     private val hidReportsSeen=java.util.concurrent.atomic.AtomicLong()
     /** 触摸报告限流：头 8 条全留证，之后每 2 s 一条。见 `hidSendReport` 处的说明。 */
@@ -812,7 +814,17 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         }
         c.plist("POST","/command",modes())
         // HID 武装（第 10 章 §2.6）：固件把 `hidSetInputMode` 发到**传输控制流**，字段是
-        // `{uuid, hidInputMode}`；没有武装过的触摸设备，报告可能根本不来。这里逐设备发一次。
+        // `{uuid, hidInputMode}`；没有武装过的触摸设备，报告可能根本不来。
+        armHidInput(c,"session open")
+        // Standard keepalive waits for a reply; low-power UDP above is independent.
+        // A control deadline invalidates/aborts the old client before session cleanup,
+        // so teardown cannot spend another timeout writing to an already dead socket.
+        scope.launch{try{
+            CarPlayControlRequests.keepAlive(c)
+        }catch(t:Exception){if(isActive)channelFailure("feedback",t)}}
+    }
+    /** 逐设备发一次 `hidSetInputMode`。返回真的被接受（2xx）的台数。 */
+    private fun armHidInput(c:RtspClient,reason:String):Int{
         val armTargets=hidArmUuids.distinct()
         var armed=0
         var unsupported=false
@@ -820,7 +832,7 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             if(unsupported)break
             val body=mapOf("type" to "hidSetInputMode","params" to mapOf("uuid" to uuid,"hidInputMode" to 0))
             val response=runCatching{c.request("POST","/command",Plist.encode(body))}.getOrElse{
-                log("hidSetInputMode transport failure for "+uuid+": "+it.javaClass.simpleName);null
+                log("hidSetInputMode transport failure for "+uuid+" ("+reason+"): "+it.javaClass.simpleName);null
             }?:continue
             when{
                 // 501 = 接收端没有实现该命令（例如 RustCarPlay）。不是错误：HID 报告是否可用
@@ -830,16 +842,40 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                     log("receiver does not implement hidSetInputMode (501); HID reports rely on advertised descriptors")
                 }
                 response.status in 200..299->armed++
-                else->log("hidSetInputMode rejected status="+response.status+" uuid="+uuid)
+                else->log("hidSetInputMode rejected status="+response.status+" uuid="+uuid+" ("+reason+")")
             }
         }
-        if(armed>0)log("HID input mode armed for "+armed+" device(s)")
-        // Standard keepalive waits for a reply; low-power UDP above is independent.
-        // A control deadline invalidates/aborts the old client before session cleanup,
-        // so teardown cannot spend another timeout writing to an already dead socket.
-        scope.launch{try{
-            CarPlayControlRequests.keepAlive(c)
-        }catch(t:Exception){if(isActive)channelFailure("feedback",t)}}
+        if(armed>0)log("HID input mode armed for "+armed+" device(s) ("+reason+")")
+        return armed
+    }
+    /** 重新武装 HID 输入模式。**事件触发，不是定时轮询。**
+     *
+     *  2026-11-03 真车：导航开始之后车机就不再发 `hidSendReport` 了 —— 会话里前 18 条全部
+     *  `forwarded=true`，之后到会话结束一条都没有，换新会话也是 0 条，只有重启车机才回来。
+     *  车机那边没有任何对应的事件告诉我们（整车只有 `hidSendReport` 与 `iAPSendMessage` 两种
+     *  命令），所以我们唯一能做的动作是：把"输入模式"再说一遍，看它认不认。
+     *
+     *  为什么盯导航：CarWith 在导航开始时会同时把帧率请求 30→60、并连发三条
+     *  `mix_notify_start_navi`；那是整个会话里显示内容唯一一次实质性切换。
+     *  同一事件只用一次，`hidRearmLock` 里 5 s 冷却挡掉连发。 */
+    fun rearmHidInput(reason:String){
+        val c=client?:return
+        val now=System.nanoTime()
+        val last=hidRearmAt.get()
+        if(last!=0L&&now-last<5_000_000_000L){
+            log("HID input mode re-arm skipped ("+reason+"): last attempt "+(now-last)/1_000_000+" ms ago")
+            return
+        }
+        if(!hidRearmAt.compareAndSet(last,now))return
+        log("HID input mode re-arm requested ("+reason+")")
+        scope.launch{
+            val armed=runCatching{armHidInput(c,reason)}.getOrElse{
+                log("HID re-arm failed ("+reason+"): "+it.javaClass.simpleName+" "+(it.message?:""));0
+            }
+            // 这一行是下次真车唯一需要的判据：车机答应了但没有触摸 = 它拒绝交回输入；
+            // 车机连 2xx 都不给 = 会话已经不认这条控制流了。
+            log("HID input mode re-arm result="+(if(armed>0)"accepted:$armed" else "not-accepted")+" ("+reason+"); touch reports after this point decide")
+        }
     }
     private fun modes()=mapOf("type" to "modesChanged","params" to screenModes.params())
     /** Compact view of an unsupported command: binary payloads are described, never printed. */

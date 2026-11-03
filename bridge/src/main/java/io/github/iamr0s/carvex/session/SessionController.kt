@@ -369,6 +369,13 @@ class SessionController(
                         val mode=intent.getIntExtra("mode",-1)
                         BridgeStore.update(id){it.copy(hostNightMode=mode)}
                     }
+                    // 2026-11-03 真车：**导航一开始，车机就停止发 hidSendReport，而且再也不发**
+                    // （同一会话后面 0 条，新会话也 0 条，只有重启车机才回来）。
+                    // 车机那边没有任何对应事件 —— 整个会话它只发 `hidSendReport` 与
+                    // `iAPSendMessage` 两种命令。所以这里是唯一一次机会：把 HID 输入模式
+                    // 再说一遍。CarWith 在导航开始时会连发三条 `mix_notify_start_navi`，
+                    // 冷却在 AirSession 里（5 s），这里不重复判重。
+                    "mix_notify_start_navi"->musicAir.get()?.rearmHidInput("CarWith reported navigation start")
                 }
             }
             override fun musicSampleRate():Int?=audio.musicSampleRate()
