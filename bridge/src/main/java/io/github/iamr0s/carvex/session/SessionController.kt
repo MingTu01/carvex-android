@@ -148,7 +148,9 @@ class SessionController(
                         break
                     }
                     BridgeStore.update(id){it.copy(stage=Stage.RETRY,
-                        detail=if(noSyn)"车机仍在释放上一个会话（通常 3 分钟内自动恢复）" else "资源已释放，等待恢复连接",
+                        // 别写"通常 X 分钟自动恢复"：真车 23:47 之后四十多分钟没松过，
+                        // 那次自愈是偶然。车机侧的会话只有车机自己放，说清楚比给希望有用。
+                        detail=if(noSyn)"车机仍占着上一次会话，需要车机侧释放（车机重启或熄火锁车）" else "资源已释放，等待恢复连接",
                         error=BridgeStore.redact(t.message?:"连接中断"))}
                     delay(options.retryIntervalSeconds*1000L)
                 }
@@ -178,9 +180,12 @@ class SessionController(
             // 再延迟执行本块，读字段永远读到 null —— 真车 2026-11-04 会话 `79055155` 就是这样
             // 一个 TEARDOWN 都没发出（整份日志里 `TEARDOWN` 只有 2 次，都来自 Wi-Fi 掉线那条路径）。
             val air=ownedAir.get()
+            // logcat 同步落盘（diagnostic.log 是异步写的，forceStop 杀进程时会丢掉最后几行）。
+            android.util.Log.i("CarVexLife","teardown begin air="+(air!=null))
             if(air==null)BridgeStore.log(id,"session teardown skipped: no captured AirSession")
             val teardown=Thread({runCatching{air?.stopNormally()}},"session-teardown")
             teardown.isDaemon=true;teardown.start();runCatching{teardown.join(6000)}
+            android.util.Log.i("CarVexLife","teardown end")
             r.close()
         };termination=cleanup
         val failed=CompletableDeferred<Throwable>()
@@ -1314,7 +1319,8 @@ class SessionController(
         require(value>0)
         applyBitrate?.invoke(value)?:BridgeStore.log(BridgeStore.state.value.id,"Bitrate saved for next connection")
     }
-    override fun close(){applyBitrate=null;applyDynamicFps=null;carPlayAudioTestJob?.cancel();carWithAudioProbeJob?.cancel();job?.cancel()
+    override fun close(){android.util.Log.i("CarVexLife","SessionController.close")
+        applyBitrate=null;applyDynamicFps=null;carPlayAudioTestJob?.cancel();carWithAudioProbeJob?.cancel();job?.cancel()
         // forceClose 会跑 cleanup 管道（含整会话 TEARDOWN 的 RTSP 往返，最多 ~6 秒），
         // 不能在主线程同步执行。
         //

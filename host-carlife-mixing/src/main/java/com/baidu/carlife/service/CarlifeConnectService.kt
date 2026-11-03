@@ -20,12 +20,16 @@ class CarlifeConnectService:Service() {
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate)
     override fun onCreate(){
         super.onCreate()
+        android.util.Log.i(LIFE,"onCreate pid="+android.os.Process.myPid())
         val owner=application as? MixingServiceOwner
             ?: error("Application must implement MixingServiceOwner")
         delegate=owner.createMixingServiceDelegate(this)
         activeInstance=this
     }
     override fun onBind(intent:Intent?):IBinder=binder // KeepAlive does not establish a session.
+    override fun onUnbind(intent:Intent?):Boolean{
+        android.util.Log.i(LIFE,"onUnbind");return super.onUnbind(intent)
+    }
     /** 只记录宿主 extras 的 key 和类型，不记录值。 */
     @Suppress("DEPRECATION")
     private fun Intent.describeExtras():String {
@@ -33,6 +37,7 @@ class CarlifeConnectService:Service() {
         return extras.keySet().filterNot{it=="internal_token"}.joinToString(","){key->key+"="+(extras.get(key)?.javaClass?.simpleName?:"null")}
     }
     override fun onStartCommand(intent:Intent?,flags:Int,startId:Int):Int {
+        android.util.Log.i(LIFE,"onStartCommand action="+(intent?.action?:"null"))
         // 落在任何提前返回之前：被拒的请求也要留痕。
         delegate.log("entry","Intent extras: "+(intent?.describeExtras()?:"none"))
         val internal=intent?.getStringExtra("internal_token")==token(this)
@@ -138,11 +143,18 @@ class CarlifeConnectService:Service() {
         return (at+USER_STOP_GRACE_MS-System.currentTimeMillis()).coerceAtLeast(0L)
     }
     override fun onDestroy(){
+        // 第一行就要落 logcat：CarWith 断开走的是 forceStopPackage（SIGKILL），
+        // 我们自己的 diagnostic.log 是异步写的，被杀时最后几行会丢；logcat 由 logd 持有，
+        // 进程死了内容还在。有没有这一行，直接判定"宿主给没给我们收尾窗口"。
+        android.util.Log.i(LIFE,"onDestroy begin")
         if(activeInstance===this)activeInstance=null
         scope.cancel()
         try{if(::delegate.isInitialized)controller.close()}finally{super.onDestroy()}
+        android.util.Log.i(LIFE,"onDestroy end")
     }
     companion object {
+        /** 生命周期留痕的统一 tag；见 [onDestroy]。 */
+        private const val LIFE="CarVexLife"
         const val CONNECT="io.github.iamr0s.carvex.CONNECT";const val STOP="io.github.iamr0s.carvex.STOP"
         /** 用户主动断开后，忽略"宿主自己找上门"的连接请求的时间窗。 */
         private const val USER_STOP_GRACE_MS=90_000L
