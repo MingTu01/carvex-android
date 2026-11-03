@@ -38,10 +38,13 @@ class CarPlayRunner(
     private val options: Options,
     private val resources: Resources,
     private val host: CarPlayHost,
+    /** 上一次尝试以 `NO_SYN` 收场时置真：重连前强制重做一次 SDP。
+     *  理由见 Bootstrap 里的 SDP 刷新注释 —— 平台缓存里的 RFCOMM 通道号可能已经作废。 */
+    private val refreshSdpBeforeConnect: Boolean = false,
 ) {
     /** 建立蓝牙 RFCOMM 连接（链路层，握手前）。 */
     suspend fun openBluetooth(): android.bluetooth.BluetoothSocket =
-        Bootstrap.bluetooth(context, options, resources, host::log)
+        Bootstrap.bluetooth(context, options, resources, host::log, refreshSdpBeforeConnect)
 
     /** iAP2 握手（识别/认证/无线交接）；返回协商后的 Wi-Fi 启动信息。 */
     suspend fun negotiate(

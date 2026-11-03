@@ -3,7 +3,10 @@ import io.github.iamr0s.carvex.sessioncore.*
 
 import android.annotation.SuppressLint
 import android.bluetooth.*
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.*
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
@@ -115,8 +118,63 @@ object Bootstrap {
         val adapter=context.getSystemService(BluetoothManager::class.java).adapter?:return emptyList()
         return adapter.bondedDevices.map{Device(it.name?:"未命名设备",it.address)}.sortedBy{it.name}
     }
+    /** 上一次尝试以 `NO_SYN` 收场时，重做一次 SDP 再连。
+     *
+     *  为什么必须动这一步：Android 的 `createRfcommSocketToServiceRecord(uuid)` 用的是**蓝牙栈内
+     *  缓存 SDP 记录里的 RFCOMM 通道号**，缓存过期它就照旧拿旧通道号去连 —— 而公开 API
+     *  （`device.uuids`）只暴露 UUID 集合、**看不到通道号**，所以"集合没变"不能推出"通道没变"。
+     *
+     *  真机 20030 的失败与成功两轮连接，UUID 集合、候选顺序、选中的 `phone` 候选逐字相同，
+     *  唯一差别是中间重启过车机 —— 重启会把通道号恢复成原值，正好符合"我们记着的是一个
+     *  已经作废的通道号"。这条注释是为了不再重复那次误判：集合相同 ≠ 通道相同。
+     *
+     *  这里只请求一次查询并等结果广播（5 s 上限）。无论结果如何都不改变后续连接流程，
+     *  但 before/after 与耗时都会写进日志：它是这个实验的判据，成败由重连结果决定。
+     */
     @SuppressLint("MissingPermission")
-    suspend fun bluetooth(context:Context,o:Options,r:Resources,log:(String)->Unit):BluetoothSocket {
+    private suspend fun refreshSdp(context:Context,device:BluetoothDevice,log:(String)->Unit) {
+        val before=device.uuids?.map{it.uuid}?.toSet()?:emptySet()
+        val result=CompletableDeferred<Set<java.util.UUID>?>()
+        val receiver=object:BroadcastReceiver(){
+            override fun onReceive(c:Context,intent:Intent){
+                if(intent.action!=BluetoothDevice.ACTION_UUID)return
+                @Suppress("DEPRECATION")
+                val target=intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                if(target?.address!=device.address)return
+                @Suppress("DEPRECATION")
+                val extra=intent.getParcelableArrayExtra(BluetoothDevice.EXTRA_UUID)
+                result.complete(extra?.filterIsInstance<android.os.ParcelUuid>()?.map{it.uuid}?.toSet())
+            }
+        }
+        val registered=runCatching{
+            val filter=IntentFilter(BluetoothDevice.ACTION_UUID)
+            if(Build.VERSION.SDK_INT>=Build.VERSION_CODES.TIRAMISU)
+                context.registerReceiver(receiver,filter,Context.RECEIVER_NOT_EXPORTED)
+            else context.registerReceiver(receiver,filter)
+        }
+        if(registered.isFailure){
+            log("Bluetooth SDP refresh unavailable: "+registered.exceptionOrNull()?.javaClass?.simpleName+
+                "; connecting with the cached record")
+            return
+        }
+        try{
+            if(!runCatching{device.fetchUuidsWithSdp()}.getOrDefault(false)){
+                log("Bluetooth SDP refresh not started; connecting with the cached record")
+                return
+            }
+            val started=System.nanoTime()
+            val announced=withTimeoutOrNull(5_000){result.await()}
+            val elapsedMs=(System.nanoTime()-started)/1_000_000
+            val after=announced?:(device.uuids?.map{it.uuid}?.toSet()?:emptySet())
+            log("Bluetooth SDP refresh done result="+
+                (if(announced==null)"timeout" else if(after!=before)"changed" else "same-uuid-set")+
+                " before="+before.size+" after="+after.size+" elapsedMs="+elapsedMs+
+                "; the platform does not expose RFCOMM channel numbers, the reconnect outcome decides")
+        }finally{runCatching{context.unregisterReceiver(receiver)}}
+    }
+    @SuppressLint("MissingPermission")
+    suspend fun bluetooth(context:Context,o:Options,r:Resources,log:(String)->Unit,
+        refreshSdpBeforeConnect:Boolean=false):BluetoothSocket {
         val adapter=context.getSystemService(BluetoothManager::class.java).adapter?:error("Bluetooth unavailable")
         check(adapter.isEnabled){"请先开启蓝牙"}
         require(BluetoothAdapter.checkBluetoothAddress(o.target)){"请选择已配对车机"}
@@ -124,9 +182,14 @@ object Bootstrap {
         fun trace(direction:String,transaction:String,outcome:String,detail:String?=null)=
             log(ProtocolTrace.event("BLUETOOTH","RFCOMM",direction,transaction,outcome,detail))
         val bonded=device.bondState==BluetoothDevice.BOND_BONDED
+        // 只有重试路径才付这次 SDP 往返的代价：首次连接沿用缓存快路径（目前是能连通的），
+        // 上一次以 NO_SYN 收场时才怀疑缓存里的通道号已经过期。
+        if(refreshSdpBeforeConnect)refreshSdp(context,device,log)
         val servicePlan=WiapBluetoothPolicy.plan(device.uuids?.map{it.uuid},o.listen)
         log("Bluetooth target paired="+bonded+" uuidSource=platform_cache observation="+servicePlan.observation+
-            " uuidCount="+servicePlan.cachedUuidCount+" freshness=unverified fullSdp=unavailable")
+            " uuidCount="+servicePlan.cachedUuidCount+
+            " freshness="+(if(refreshSdpBeforeConnect)"refreshed" else "unverified")+
+            " fullSdp="+(if(refreshSdpBeforeConnect)"queried-channel-unverified" else "unavailable"))
         // 缓存里有 UUID 但一个都不是 WiAP 时，只报 NO_WIAP_HINT 无法判断对端到底发布了什么。
         // 这里是平台缓存原文（不是 SDP attribute4 结论），只用于看清对端角色。
         log("Bluetooth cached uuids="+(device.uuids?.joinToString(","){"0x"+it.uuid.toString()}?.ifEmpty{"none"}?:"unavailable"))

@@ -78,15 +78,22 @@ class SessionController(
         if(adapter==null||!adapter.isEnabled){reject("蓝牙未开启：请先在系统设置中打开蓝牙，再回到本页连接");return}
         job=scope.launch {
             var attempt=0
+            // 上一轮以 iAP NO_SYN 收场时，下一轮连接前强制重做一次 SDP。
+            // 只对 NO_SYN 生效：其它失败（权限、配对、被拒）与缓存通道号无关，不该多付一次 SDP 往返。
+            var refreshSdp=false
             while(isActive){
                 if(attempt<Int.MAX_VALUE)attempt++
                 if(!isActive)break
                 val id=BridgeStore.begin(attempt)
-                try { attempt(id,options,fromHost);break }
+                try { attempt(id,options,fromHost,refreshSdp);break }
                 catch(t:kotlinx.coroutines.CancellationException){throw t}
                 catch(t:Exception){
                     currentCoroutineContext().ensureActive()
                     BridgeStore.log(id,"failure: "+t.javaClass.simpleName+" "+(t.message?:""))
+                    // 一旦确认缓存通道号坏过就一直刷新，不在后续失败里又退回旧缓存。
+                    refreshSdp=refreshSdp||generateSequence<Throwable>(t){it.cause}.any{cause->
+                        cause is java.net.SocketTimeoutException&&cause.message?.contains("NO_SYN")==true
+                    }
                     // 空消息的异常（例如候选为空时抛的那条 IllegalStateException）只靠类型无法定位，把栈截断打出来。
                     BridgeStore.log(id,"failure stack: "+t.stackTraceToString().take(2048))
                     BridgeStore.log(id,ProtocolTrace.event(BridgeStore.state.value.stage.name,"session","local","attempt","failed",t.javaClass.simpleName))
@@ -115,7 +122,7 @@ class SessionController(
         catch(t:Throwable){BridgeStore.log(id,"Local display unavailable: "+t.javaClass.simpleName+" "+(t.message?:""));null}
     }
     private fun reject(s:String){val id=BridgeStore.begin(0);BridgeStore.update(id){it.copy(stage=Stage.FAILED,detail=s,error=s)};BridgeStore.log(id,s)}
-    private suspend fun attempt(id:String,o:Options,fromHost:Boolean):Unit=withContext(Dispatchers.IO) {
+    private suspend fun attempt(id:String,o:Options,fromHost:Boolean,refreshSdp:Boolean=false):Unit=withContext(Dispatchers.IO) {
         val r=Resources{trace->
             BridgeStore.log(id,"Resource close type="+trace.type+" elapsedMs="+trace.elapsedMs+" error="+trace.error)
         }
@@ -613,7 +620,7 @@ class SessionController(
             override fun voice(action:String):Boolean=directVoiceAction(action)
             override fun warn(message:String){BridgeStore.update(id){s->s.copy(warning=BridgeStore.redact(message))}}
         }
-        val runner=CarPlayRunner(context,o,r,carPlayHost)
+        val runner=CarPlayRunner(context,o,r,carPlayHost,refreshSdp)
             val bt=phase(Stage.BLUETOOTH,90000){runner.openBluetooth()}
             val pendingSourceEof=AtomicReference<Throwable?>(null)
             val sourceFailure=AtomicReference<(Throwable)->Unit>({error->
