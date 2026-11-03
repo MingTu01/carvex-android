@@ -7,6 +7,7 @@ import android.util.Log
 import io.github.iamr0s.carvex.sessioncore.BridgeStore
 import io.github.iamr0s.carvex.carplay.core.AudioDebugConfig
 import io.github.iamr0s.carvex.session.ScreenRestartHook
+import io.github.iamr0s.carvex.session.HidProbeHook
 
 /** ADB 运行时音频调试广播：免重编/重装切音频参数。
  *
@@ -136,6 +137,25 @@ class AudioDebugReceiver : BroadcastReceiver() {
                     }
                     Log.i(TAG, "restartScreen reason=$reason -> $ok")
                 }, "adb-screen-restart").start()
+            }
+        }
+
+        // hidMode: 用指定值发一次 hidSetInputMode（导航态下探测这个枚举的合法取值）。
+        // 与 restartScreen 同理：动作类，不改配置、不跟 reconnect 联动、必须离开主线程
+        // （每条命令都是一次阻塞 RTSP 往返，4 台设备就是 4 次）。
+        if (intent.hasExtra("hidMode")) {
+            val mode = intent.getIntExtra("hidMode", 0)
+            val probe = HidProbeHook.probe
+            if (probe == null) {
+                sb.append(" hidMode=no-session")
+            } else {
+                sb.append(" hidMode=$mode queued")
+                Thread({
+                    val armed = runCatching { probe(mode) }.getOrElse { t ->
+                        Log.i(TAG, "hidMode threw: ${t.javaClass.simpleName} ${t.message ?: ""}"); -1
+                    }
+                    Log.i(TAG, "hidMode=$mode armed=$armed")
+                }, "adb-hid-probe").start()
             }
         }
 

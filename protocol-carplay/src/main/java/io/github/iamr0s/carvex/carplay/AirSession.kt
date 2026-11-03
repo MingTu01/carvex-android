@@ -826,13 +826,13 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         }catch(t:Exception){if(isActive)channelFailure("feedback",t)}}
     }
     /** 逐设备发一次 `hidSetInputMode`。返回真的被接受（2xx）的台数。 */
-    private fun armHidInput(c:RtspClient,reason:String):Int{
+    private fun armHidInput(c:RtspClient,reason:String,mode:Int=0):Int{
         val armTargets=hidArmUuids.distinct()
         var armed=0
         var unsupported=false
         for(uuid in armTargets){
             if(unsupported)break
-            val body=mapOf("type" to "hidSetInputMode","params" to mapOf("uuid" to uuid,"hidInputMode" to 0))
+            val body=mapOf("type" to "hidSetInputMode","params" to mapOf("uuid" to uuid,"hidInputMode" to mode))
             val response=runCatching{c.request("POST","/command",Plist.encode(body))}.getOrElse{
                 log("hidSetInputMode transport failure for "+uuid+" ("+reason+"): "+it.javaClass.simpleName);null
             }?:continue
@@ -849,6 +849,18 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         }
         if(armed>0)log("HID input mode armed for "+armed+" device(s) ("+reason+")")
         return armed
+    }
+
+    /** 用指定 `hidInputMode` 值武装一次，用于在导航态下探测这个枚举的合法取值。
+     *
+     *  为什么需要它：健康会话里我们一直发 0，能用，但从没验证过 0 之外还有哪些取值合法。
+     *  导航一开始车机就停发 `hidSendReport`，重发 0 已被 20037 的真车实验证伪。所以这里把
+     *  取值当作未知枚举来探：每次只发一个值，观测两件事 —— 车机回 200 还是 4xx、之后有没有
+     *  触摸报告回来。有观测依据，不是猜字段。 */
+    fun probeHidInputMode(mode:Int,reason:String):Int{
+        val c=client?:run{log("hid mode probe skipped ("+reason+"): no control client");return -1}
+        log("hid mode probe begin mode="+mode+" ("+reason+")")
+        return armHidInput(c,reason+" mode="+mode,mode)
     }
     /** 重新武装 HID 输入模式。**事件触发，不是定时轮询。**
      *
