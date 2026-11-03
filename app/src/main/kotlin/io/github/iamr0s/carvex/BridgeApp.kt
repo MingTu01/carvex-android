@@ -17,6 +17,12 @@ class BridgeApp:Application(),MixingServiceOwner{
     override fun onCreate(){
         super.onCreate()
         BridgeStore.init(this)
+        // NO_SYN 的判据必须落盘：真机上这个进程在每次连接尝试之间就会被回收，内存里的标记
+        // 下一次读不到，于是"重连前重做一次 SDP"这个兜底永远不触发。见 IapNoSynHint。
+        val sessionPrefs=getSharedPreferences("session",Context.MODE_PRIVATE)
+        io.github.iamr0s.carvex.carplay.core.IapNoSynHint.install(
+            persist={at->sessionPrefs.edit().putLong("no_syn_at",at).apply()},
+            read={sessionPrefs.getLong("no_syn_at",0L)})
         // 连接历史要在任何界面读到它之前装好：首页第一段直接读它的 StateFlow。
         DeviceHistory.init(this)
         // 组装层启动 Koin：协议栈与宿主插件都从这里取；库模块自身不依赖 Koin。
