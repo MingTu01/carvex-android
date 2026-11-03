@@ -445,11 +445,23 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                 throw IllegalStateException("no usable AirPlay control endpoint; local=["+show(localsNow)+
                     "] iap2=["+show(direct)+"] bonjour=["+show(discovered)+"]")
             log("control candidates="+candidates.joinToString(","){it.source.toString()+"@"+it.address.hostAddress+":"+it.port}+" local="+show(localsNow))
-            for(candidate in candidates){
-                try{ return connectedSocket(candidate.address,candidate.port) }
-                catch(t:Exception){
-                    last=t
-                    log("control connect failed source="+candidate.source+" at "+candidate.address.hostAddress+":"+candidate.port+" "+(t.message?:t.javaClass.simpleName))
+            // 车机在释放上一段 AirPlay 会话期间会关掉控制端口的监听：真车 2026-11-04 16:43:34，
+            // iAP 已经走完（SYN/AUTH/WIFI/Bonjour 全通），BOOTSTRAP 与 BONJOUR 两个候选却在 10ms
+            // 内都被 ECONNREFUSED 拒掉——不是地址错，是它还没重新 listen。
+            // 这时整段重连代价很大（CarWith 会因此 forceStop 我们），所以在原地等它开门：
+            // 每一轮都重走全部候选，拒绝是瞬时的，等的是那 2 秒。
+            val rounds=4
+            for(round in 1..rounds){
+                for(candidate in candidates){
+                    try{ return connectedSocket(candidate.address,candidate.port) }
+                    catch(t:Exception){
+                        last=t
+                        log("control connect failed source="+candidate.source+" at "+candidate.address.hostAddress+":"+candidate.port+" round="+round+"/"+rounds+" "+(t.message?:t.javaClass.simpleName))
+                    }
+                }
+                if(round<rounds){
+                    log("control endpoint not listening yet (round "+round+"/"+rounds+"); the car is still releasing the previous session, retrying in 2000ms")
+                    Thread.sleep(2000)
                 }
             }
             throw last?:IllegalStateException("control connect produced no attempt")
