@@ -71,4 +71,19 @@ object AudioDebugConfig {
      *
      *  关掉它就回到"语音只认 `100/speechRecognition`"的旧行为，用于真车 A/B。 */
     @Volatile var speechAltPcm: Boolean = true
+
+    /** 导航语音（category 2）整条丢弃：连 SETUP 都不发，只记一行日志。
+     *
+     *  存在的理由（2026-11-03 真车诊断）：每次点"开始导航"，最先发生的事不是导航通知，
+     *  而是 category 2 要流 —— 而它**每次都失败**：
+     *  ```
+     *  14:49:36.53  category=2 selected type=100/alert    → SETUP 400
+     *  14:49:36.60  → 回退 101/default                    → activation failed
+     *  14:49:36.62  mix_notify_start_navi（导航动作比它晚 0.1 秒）
+     *  ```
+     *  而最后一条触摸就停在这之前。所以要单独验：这次注定失败的 SETUP 本身，是不是就是
+     *  车机收走触摸的触发点。`pcmAlert` 拦不住它（那个只改编码偏好，不改路径）。
+     *
+     *  关掉它 = 导航期间完全没有导航语音（现在本来也听不到），用来做单变量 A/B。 */
+    @Volatile var navAudio: Boolean = true
 }

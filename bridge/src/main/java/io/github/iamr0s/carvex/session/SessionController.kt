@@ -1044,6 +1044,14 @@ class SessionController(
             phase(Stage.SETUP,70000){
                 val completions=ConcurrentHashMap<Int,CompletableDeferred<Unit>>()
                 fun requestAudio(category:Int,firstPcm:ByteArray,pcmFormat:PcmFormat,prime:Boolean=false):Boolean {
+                    // 诊断开关：完全丢弃导航语音（category 2），连 SETUP 都不发。
+                    // 见 AudioDebugConfig.navAudio —— 用来单变量验证"导航那一刻这次注定失败的
+                    // SETUP 是否就是车机收走触摸的触发点"。返回 true 表示我们已接管这段音频，
+                    // 调用方不会把它转去手机本机播放。
+                    if(category==2&&!io.github.iamr0s.carvex.carplay.core.AudioDebugConfig.navAudio){
+                        BridgeStore.log(id,"Audio category=2 dropped by navAudio=false; no SETUP attempted")
+                        return true
+                    }
                     val ticket=if(prime)audioDemand.prime(category,pcmFormat)
                         else audioDemand.claim(category,firstPcm.size,pcmFormat)
                     if(ticket!=null){

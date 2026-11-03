@@ -113,6 +113,15 @@ class AudioDebugReceiver : BroadcastReceiver() {
             sb.append(" volumeDb=$v")
             changed = true
         }
+        // navAudio: 导航语音（category 2）整条丢弃，连 SETUP 都不发（默认 true = 正常处理）。
+        // 用于验证"导航开始那次注定失败的 SETUP 是否就是触摸消失的触发点"。
+        if (intent.hasExtra("navAudio")) {
+            val v = intent.getBooleanExtra("navAudio", true)
+            AudioDebugConfig.navAudio = v
+            editor.putBoolean("audioNavAudio", v)
+            sb.append(" navAudio=$v")
+            changed = true
+        }
         if (changed) editor.apply()
 
         // restartScreen: 立刻重建一次屏幕流（TEARDOWN → SETUP → 重连数据口 → RECORD）。
