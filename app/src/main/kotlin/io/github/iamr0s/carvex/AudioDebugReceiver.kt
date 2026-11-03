@@ -92,6 +92,15 @@ class AudioDebugReceiver : BroadcastReceiver() {
             sb.append(" pcmAlert=$v")
             changed = true
         }
+        // speechAltPcm: 语音（category 3）走 101/default 裸 PCM16（默认开）。
+        // 关掉它 = 语音只认 100/speechRecognition，用于真车 A/B 那条"语音把 type 100 顶掉"的结论。
+        if (intent.hasExtra("speechAltPcm")) {
+            val v = intent.getBooleanExtra("speechAltPcm", true)
+            AudioDebugConfig.speechAltPcm = v
+            editor.putBoolean("audioSpeechAltPcm", v)
+            sb.append(" speechAltPcm=$v")
+            changed = true
+        }
         // audioVolumeDb: 主音频增益（dB）。NaN 表示不宣告，此时走 AudioDebugConfig 的 0 dB 默认值。
         if (intent.hasExtra("volumeDb")) {
             val v = intent.getDoubleExtra("volumeDb", 0.0)

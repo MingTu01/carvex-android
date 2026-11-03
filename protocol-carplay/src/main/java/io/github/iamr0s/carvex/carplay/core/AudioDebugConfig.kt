@@ -52,4 +52,23 @@ object AudioDebugConfig {
      *
      *  默认关：合成器行为没有实车听感证据，只在明确要试提示音时打开。 */
     @Volatile var pcmAlert: Boolean = false
+
+    /** 语音（category 3）改走 `101/default` 的裸 PCM16 48000/2，而不是 `100/speechRecognition`。
+     *
+     *  为什么（2026-11-03 真车 session `9829c6ba` / `76cfb21d`）：车机在 `type 100` 上只容忍
+     *  **一条**音频流，而主音频 PCM 48k/2 常年占着它。于是：
+     *
+     *  ```
+     *  06:14:01  cat1 100/media PCM 48k/2        → accepted（主音频，出声）
+     *  06:14:57  cat3 100/speechRecognition ELD  → status 400（type 100 已被占）
+     *  06:15:01  cat2 100/alert                  → 400 → 改走 101/default → accepted
+     *  ```
+     *
+     *  语音因此永远起不来；而车机一旦为语音让出输入焦点就再也不还回来 —— 现象就是
+     *  「用完小爱之后触屏失效，只有重启车机能恢复」。`101/default` 是车机自己在
+     *  `/info` 里广告的（`outputMask=2008000` → lpcm 48000/2 | ELD 48000/2），也是独立上下文，
+     *  不会顶掉主音频。
+     *
+     *  关掉它就回到"语音只认 `100/speechRecognition`"的旧行为，用于真车 A/B。 */
+    @Volatile var speechAltPcm: Boolean = true
 }

@@ -14,7 +14,18 @@ object CarPlayAudioPlan {
     val alert=Route(2,100,"alert")
     val alternate=Route(2,101,"default")
     val assistant=Route(3,100,"speechRecognition")
-    val routes=listOf(media,mediaLowLatency,alert,alternate,assistant)
+    /** 语音的**第二个**落点：`101/default`。
+     *
+     *  2026-11-03 真车 `/info`（session `9829c6ba`）广告了 `#7 streamType=101 audioType=default
+     *  outputMask=2008000`，即 lpcm 48000/2 | ELD 48000/2 —— 与 `100/alert` 同一组格式。
+     *  同一次会话里 `101/default` 被 SETUP 接受过三次（06:15:01 / 06:16:07 / 06:16:11），
+     *  所以这不是猜出来的路由，是车机自己声明的。
+     *
+     *  为什么要它：车机的 `type 100` 只能同时存在一条流（谁先 SETUP 谁占住），
+     *  而主音频 PCM 48k/2 一直占着它。于是 `100/speechRecognition` 的再 SETUP 一律 400 ——
+     *  语音永远起不来。`type 101` 是**独立上下文**，把语音挪过去就不跟主音频抢。 */
+    val speechAlternate=Route(3,101,"default")
+    val routes=listOf(media,mediaLowLatency,alert,alternate,assistant,speechAlternate)
     private fun f(bit:Long,codec:Codec,rate:Int,channels:Int,frames:Int)=Format(bit,codec,rate,channels,frames)
     val formats:List<Format> = buildList {
         val pcm=listOf(0x4L to 8000,0x10L to 16000,0x40L to 24000,0x100L to 32000,0x400L to 44100,0x4000L to 48000)
@@ -123,18 +134,26 @@ object CarPlayAudioPlan {
      *  cat2  101/default            PCM 48k/2  → accepted（不同 type，另一个上下文）
      *  ```
      *
-     *  所以 PCM 不能"三条流一起上"：category 3 必须留在压缩路径，`type 100` 的 PCM 上下文留给
-     *  主音频。category 2 想用 PCM 只能走 `101/default`，那是独立的 type。 */
+     *  所以 PCM 不能"三条流一起上"：`type 100` 的 PCM 上下文留给主音频。category 2 想用 PCM
+     *  只能走 `101/default`，那是独立的 type。
+     *
+     *  **2026-11-03 追认这条规则的范围更宽**：不只是 PCM —— 车机在 `type 100` 上只容忍**一条**
+     *  音频流。那天的日志（session `9829c6ba`）里 bootstrap 3→2→1 之所以全 200，只是因为前两条
+     *  各自在 25 ms 内就被我们自己拆掉了；等主音频 PCM 落住之后，同一会话里
+     *  `100/speechRecognition` 的 SETUP 直接 400，`100/alert` 也被顶掉（改走 `101/default` 才成）。
+     *  语音因此永远起不来，而车机一旦为语音让出输入焦点就再也不还回来 —— 表现为"用完小爱之后
+     *  触屏失效，只能重启车机"。所以 category 3 的 PCM 现在明确落到 `101/default`。 */
     fun selectPlayback(entries:List<AudioCapabilities.Entry>,category:Int,source:PcmFormat,
         requireDuplex:Boolean=false,supportsCapture:(Format)->Boolean={true},
         excludedRoutes:Set<Route> = emptySet(),
         preferPcm:Boolean=AudioDebugConfig.pcmMedia,
         preferPcmAlert:Boolean=AudioDebugConfig.pcmAlert,
+        preferSpeechAlt:Boolean=AudioDebugConfig.speechAltPcm,
         supportsEncoded:(Format)->Boolean):Selection? {
         val choices=when(category){
             1->listOf(media,mediaLowLatency)
             2->listOf(alert,alternate)
-            3->listOf(assistant)
+            3->listOf(assistant,speechAlternate)
             else->throw IllegalArgumentException()
         }
         // PCM 优先：只在车机真的广告了可发的 PCM16 时生效，否则无声退回下面的压缩选择。
@@ -142,16 +161,22 @@ object CarPlayAudioPlan {
         // PCM —— 所以 category 1 的 `media(102)` 在这里必然交出 null，自然落到
         // `mediaLowLatency(100)`，与实车 20030 出声的配置逐字节一致。
         //
-        // category 3 故意不在这里：见上面 type 100 单一 PCM 上下文的记录。
+        // category 3 的 PCM 只走 `101/default`，**绝不**走 `100/speechRecognition`：
+        // 那会顶掉主音频的 type 100 上下文（20032 的代价）。
         val pcmRoutes=when(category){
             1->if(preferPcm)listOf(mediaLowLatency) else emptyList()
             2->if(preferPcm&&preferPcmAlert)listOf(alternate) else emptyList()
+            3->if(preferSpeechAlt)listOf(speechAlternate) else emptyList()
             else->emptyList()
         }
         for(route in pcmRoutes){
             if(route !in choices)continue
             if(route in excludedRoutes)continue
-            fun pcmInputSupported(format:Format)=!requireDuplex||(duplexSupported(entries,route,format)&&supportsCapture(format))
+            // `101/default` 是纯输出路由：本端从来给不出采集方向（A-44 的 SAP 输入密钥没有派生
+            // 材料，`microphone not offered` 每次 SETUP 都会打），所以对它不要求 duplex ——
+            // 这不是放松门禁，而是它本来就没有输入可以松。`assistant(100/…)` 仍然照旧要求。
+            val outputOnly=route==speechAlternate
+            fun pcmInputSupported(format:Format)=outputOnly||!requireDuplex||(duplexSupported(entries,route,format)&&supportsCapture(format))
             val pcm=pcmCompatibility(entries,route,source)?.takeIf(::pcmInputSupported)
             if(pcm!=null)return Selection(route,pcm)
         }
@@ -176,10 +201,12 @@ object CarPlayAudioPlan {
     fun bootstrapPlayback(entries:List<AudioCapabilities.Entry>,source:PcmFormat,
         preferPcm:Boolean=AudioDebugConfig.pcmMedia,
         preferPcmAlert:Boolean=AudioDebugConfig.pcmAlert,
+        preferSpeechAlt:Boolean=AudioDebugConfig.speechAltPcm,
         supportsEncoded:(Format)->Boolean):List<Selection> =
         listOf(3,2,1).mapNotNull{category->
             selectPlayback(entries,category,source,requireDuplex=category==3,
-                preferPcm=preferPcm,preferPcmAlert=preferPcmAlert,supportsEncoded=supportsEncoded)
+                preferPcm=preferPcm,preferPcmAlert=preferPcmAlert,preferSpeechAlt=preferSpeechAlt,
+                supportsEncoded=supportsEncoded)
         }.distinctBy{it.route.type to it.route.purpose}
     /** 麦克风（车机采集方向）的候选序。
      *

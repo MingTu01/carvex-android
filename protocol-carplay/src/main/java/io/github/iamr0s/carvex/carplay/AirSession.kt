@@ -123,8 +123,15 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
     private val audioTransports=java.util.concurrent.ConcurrentHashMap<Int,NegotiatedAudioTransport>()
     @Volatile private var videoFrames=0L
     @Volatile private var lastVideoNanos=0L
-    /** Local recovery policy: remember explicit navigation SETUP refusals for this session only. */
+    /** Local recovery policy: remember explicit SETUP refusals for this session only.
+     *  提示音与语音分开记：两者经常抢同一个 `101/default`，一个被拒不能连坐另一个。 */
     private val rejectedPromptRoutes=java.util.concurrent.ConcurrentHashMap.newKeySet<CarPlayAudioPlan.Route>()
+    private val rejectedSpeechRoutes=java.util.concurrent.ConcurrentHashMap.newKeySet<CarPlayAudioPlan.Route>()
+    private fun rejectedRoutes(category:Int):MutableSet<CarPlayAudioPlan.Route>? = when(category){
+        2->rejectedPromptRoutes
+        3->rejectedSpeechRoutes
+        else->null
+    }
     /** 每条流响应里的 streamID，仅用于诊断；固件音频关闭路径不把它写入 TEARDOWN。 */
     private val audioStreamIds=java.util.concurrent.ConcurrentHashMap<String,Long>()
     private fun audioKey(type:Int,purpose:String)="$type/$purpose"
@@ -1044,7 +1051,7 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         val selected=CarPlayAudioPlan.selectPlayback(receiverAudio,category,source,
             requireDuplex=wantsInput,supportsCapture={format->
                 format.codec==CarPlayAudioPlan.Codec.PCM16||runCatching{AudioCodecSupport.decoders(format).isNotEmpty()}.getOrDefault(false)
-            },excludedRoutes=if(category==2)rejectedPromptRoutes else emptySet()){format->
+            },excludedRoutes=rejectedRoutes(category)?:emptySet()){format->
             val encoders=runCatching{AudioCodecSupport.encoders(format)}.getOrDefault(emptyList())
             log("Audio category="+category+" local "+format.codec+"/"+format.rate+"/"+format.channels+" encoders="+encoders.joinToString())
             encoders.isNotEmpty()
@@ -1303,10 +1310,13 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                 finishClose(needsTeardown=setupAttempted&&t !is RtspClient.StatusException)
             }else runCatching{audioStreams.awaitClose(lease)}
             transportRef.get()?.let{audioTransports.remove(category,it)}
-            // An explicit refusal is retryable on the next advertised prompt route. A timeout,
+            // An explicit refusal is retryable on the next advertised route. A timeout,
             // crypto error or malformed successful response must not trigger another SETUP.
-            if(category==2&&t is RtspClient.StatusException&&t.status in setOf(400,406,415)&&rejectedPromptRoutes.add(route)){
-                log("Audio prompt route refused type="+route.type+"/"+route.purpose+" status="+t.status+
+            // 语音（3）同 prompt（2）：`100/speechRecognition` 在主音频占着 type 100 时一定 400，
+            // 这时要能换到 `101/default`，否则车机的语音会话永远不成立（真车表现：触屏不恢复）。
+            val rejected=rejectedRoutes(category)
+            if(rejected!=null&&t is RtspClient.StatusException&&t.status in setOf(400,406,415)&&rejected.add(route)){
+                log("Audio route refused category="+category+" type="+route.type+"/"+route.purpose+" status="+t.status+
                     "; local recovery tries the next advertised route")
                 return createAudioLocked(category,source,onMicrophone)
             }
