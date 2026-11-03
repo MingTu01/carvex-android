@@ -369,27 +369,22 @@ class SessionController(
                         val mode=intent.getIntExtra("mode",-1)
                         BridgeStore.update(id){it.copy(hostNightMode=mode)}
                     }
-                    // 2026-11-03 真车：**导航态下车机把显示与输入一起关掉**，但音频照收
-                    // （会话 7dbf1b68：hidSendReport 0 条、按 home 再切回黑屏、音乐全程正常，
-                    // 而 /feedback 仍 98/98 回 200）。20037 的"重发 hidSetInputMode"已被证伪
-                    // ——4 台全 200 接受，之后仍然 0 条触摸。
+                    // 2026-11-03 真车：**导航态的真实症状是「只断触摸」，画面是活的。**
+                    // 我之前把"按 home 再切回黑屏"误当成了"导航态显示也断"，方向偏了一整轮。
                     //
-                    // 所以这一轮只验一个假设：**重新 SETUP 屏幕流能逼车机重建显示管线**。
-                    // 重建后立刻要一个关键帧，让新数据口上有可解码的起点。
-                    // 判据（三条互斥）：
-                    //   画面回来 + 触摸回来  → 显示管线是根因，这条就是解法；
-                    //   画面回来、触摸仍无    → 输入是独立开关，得另找；
-                    //   画面也没回来          → 车机把会话整体降级，协议层无解。
+                    // 于是试了"重建屏幕流"这条路，两轮对照组把它判死：
+                    //   会话 5a0a83bb（非导航态，画面和触摸都正常时触发）：
+                    //   同 ID 重建 → SETUP/RECORD 全 200、新端口 ESTABLISHED 且在收、
+                    //   帧继续涨、触摸继续回报（4→68），**画面永久变黑**；
+                    //   会话 7898d2fd：换新 streamConnectionID 重建 → 同样全 200，**还是黑**。
+                    // 结论：屏幕流一旦被 TEARDOWN，这条会话内车机就再也不把显示绑回来。
+                    //
+                    // 所以这里**故意什么都不做**，只留日志。自动重建会把"断触摸"升级成
+                    // "断触摸 + 断画面"，比原来的 bug 更糟。重建入口保留在
+                    // ScreenRestartHook（ADB 调试用），但绝不在主路径上自动触发。
                     "mix_notify_start_navi"->{
-                        val air=musicAir.get()
-                        scope.launch(Dispatchers.IO){
-                            val restarted=runCatching{air?.restartScreen("CarWith reported navigation start")==true}
-                                .getOrElse{ e->
-                                    BridgeStore.log(id,"navigation screen restart threw: "+e.javaClass.simpleName+" "+(e.message?:""));false
-                                }
-                            BridgeStore.log(id,"navigation screen restart="+restarted+"; picture and touch after this decide")
-                            if(restarted)runCatching{video?.requestIdr()}
-                        }
+                        BridgeStore.log(id,"navigation start observed; no screen rebuild is attempted "+
+                            "(both same-id and new-id rebuilds were proven to kill the picture)")
                     }
                 }
             }
