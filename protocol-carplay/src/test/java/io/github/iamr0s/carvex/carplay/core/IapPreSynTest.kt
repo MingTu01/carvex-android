@@ -35,6 +35,13 @@ class IapPreSynTest {
         fun put(f:IapWire.Frame,version:Int=1){check(input.offer(IapWire.packet(f,version)))}
         fun detection(){check(input.offer(IapWire.detection))}
         fun bytes():ByteArray=checkNotNull(output.poll(2,TimeUnit.SECONDS)){"no output"}
+        /** 本地静默探测的顺序：先 RST（清掉车机可能残留的旧链路状态），再 Detect。 */
+        fun assertRstThenDetection(){
+            val rst=bytes()
+            assertEquals((-1).toByte(),rst[0]);assertEquals(0x5a.toByte(),rst[1])
+            assertEquals("RST 的 flags 在本机默认 packetVersion=1 下位于第 5 字节",0x10,rst[4].toInt() and 0xff)
+            assertArrayEquals(IapWire.detection,bytes())
+        }
         fun read()=IapWire.read(ByteArrayInputStream(bytes()))
         fun logContains(text:String){
             val until=System.nanoTime()+TimeUnit.SECONDS.toNanos(2)
@@ -72,7 +79,7 @@ class IapPreSynTest {
 
     @Test(timeout=6000) fun ackAfterLocalIdleDetectAlsoWaitsForSyn(){
         Peer(firstMs=50).use{p->
-            val started=p.start();assertArrayEquals(IapWire.detection,p.bytes())
+            val started=p.start();p.assertRstThenDetection()
             p.put(ack);p.logContains("pre-SYN ACK ignored");p.unready();assertNull(p.output.poll())
             p.put(syn());p.confirm(started,p.read());assertTrue(p.failures.isEmpty())
         }

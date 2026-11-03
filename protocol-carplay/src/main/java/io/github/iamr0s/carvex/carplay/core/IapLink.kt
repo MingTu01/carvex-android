@@ -403,9 +403,18 @@ class IapLink(input:InputStream, private val output:OutputStream,
         if(detectOnIdle&&firstByteTimeoutMs>0)handshakeDeadline.schedule({
             if(closed.get()||firstByteSeen||handshakeComplete())return@schedule
             if(!idleDetectSent.compareAndSet(false,true))return@schedule
-            log("iAP first-byte deadline "+firstByteTimeoutMs+"ms; sending Detect")
-            runCatching{synchronized(writeLock){output.write(IapWire.detection);output.flush()}}
-                .onFailure{log("iAP Detect write failed: "+it.javaClass.simpleName+" "+(it.message?:""))}
+            log("iAP first-byte deadline "+firstByteTimeoutMs+"ms; sending RST+Detect")
+            runCatching{synchronized(writeLock){
+                // 对端静默时只发 Detect 往往白等：车机若仍认为上一条链路是活的，它不会主动
+                // 补 SYN（真车 2026-11-04 16:26:34 那次，7 秒一声不响然后判 NO_SYN）。
+                // 同一份日志里成功重连那一次，我们因为收到 pre-SYN 残留数据回了一条 RST，
+                // 车机 16ms 后就补发了 SYN —— RST 才是让它丢掉旧链路状态的那一下。
+                // 所以这里先 RST 把它清干净，再发 Detect 探它。
+                // 两段时限都只在握手前生效，正常路径（车机 100ms 内先开口）走不到这里。
+                sendSeq=0
+                write(IapWire.Frame(0x10,0,0,0,byteArrayOf()))
+                output.write(IapWire.detection);output.flush()
+            }}.onFailure{log("iAP RST+Detect write failed: "+it.javaClass.simpleName+" "+(it.message?:""))}
         },firstByteTimeoutMs.toLong(),TimeUnit.MILLISECONDS)
         armPreSynDeadline()
     }

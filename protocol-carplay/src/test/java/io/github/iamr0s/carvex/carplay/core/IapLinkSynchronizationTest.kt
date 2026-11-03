@@ -972,7 +972,7 @@ class IapLinkSynchronizationTest {
     /** 指南 §3.3：打开后 `firstByteTimeoutMs` 内一个字节都没收到就发一次 Detect；
      *  再过 `detectTimeoutMs` 仍没有对端 SYN 就判 NO_SYN 拆链。两段时限在这里压到 80/120 ms，
      *  只验证顺序与终态，不验证真实秒数。 */
-    @Test(timeout=6000) fun silentPeerGetsOneDetectAndThenNoSynFailure(){
+    @Test(timeout=6000) fun silentPeerGetsOneRstThenDetectAndThenNoSynFailure(){
         val failures=CopyOnWriteArrayList<Throwable>()
         val signal=java.util.concurrent.CountDownLatch(1)
         val phoneInput=BoundedByteInput()
@@ -983,7 +983,15 @@ class IapLinkSynchronizationTest {
         },{},{failures.add(it);signal.countDown()},firstByteTimeoutMs=80,detectTimeoutMs=120)
         try{
             val worker=Executors.newSingleThreadExecutor().submit{runCatching{link.start(allowDirectSyn=true)}}
-            val detect=ByteArray(6); var at=0
+            // 静默时先发一条 RST 把车机的旧链路状态清掉，再发 Detect 探它：
+            // 真车 2026-11-04 那一次只发 Detect，车机 7 秒一声不响，直接判了 NO_SYN。
+            val rst=ByteArray(9); var at=0
+            while(at<9){val n=carInput.read(rst,at,9-at);check(n>0);at+=n}
+            assertEquals("RST 必须先到",(-1).toByte(),rst[0])
+            assertEquals(0x5a.toByte(),rst[1])
+            assertEquals("包长字段",9,rst[3].toInt() and 0xff)
+            assertEquals("flags 必须是 0x10 (RST)",0x10,rst[4].toInt() and 0xff)
+            val detect=ByteArray(6); at=0
             while(at<6){val n=carInput.read(detect,at,6-at);check(n>0);at+=n}
             assertArrayEquals(IapWire.detection,detect)
             assertTrue("NO_SYN 兜底必须触发",signal.await(3,TimeUnit.SECONDS))
