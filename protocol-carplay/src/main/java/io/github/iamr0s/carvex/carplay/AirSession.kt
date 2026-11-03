@@ -1512,18 +1512,29 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
      *  而是把整条显示管线撂下了。这里只剩一个动作能逼它重建：重新 SETUP 屏幕流。
      *
      *  调用方随后应触发一次关键帧，让编码器把新的 SPS/PPS 发到新数据口，
-     *  否则新流里没有可解码的起点。 */
+     *  否则新流里没有可解码的起点。
+     *
+     *  2026-11-03 真车对照组（会话 `5a0a83bb`，非导航态、画面和触摸都正常时触发）：
+     *  复用**同一个** `streamConnectionID` 重建后，车机对 SETUP/RECORD 都回 200，新数据口
+     *  ESTABLISHED 且 tx_queue 为空（说明它在收），触摸也一直在回报（4 条 → 68 条），
+     *  但**画面一直是黑的**。两次 SETUP 的请求体逐字节相同（223 字节）。
+     *  也就是说车机把重复声明当成了同一条流，显示仍绑在被 TEARDOWN 掉的旧流上。
+     *  所以这里必须换一个新的 `streamConnectionID`，让它看到的是"真的新流"。 */
     fun restartScreen(reason:String):Boolean {
         val setup=setupLifecycle?:run{log("screen restart skipped ("+reason+"): no SETUP session");return false}
-        val stream=screenStream?:run{log("screen restart skipped ("+reason+"): no saved screen stream");return false}
+        val saved=screenStream?:run{log("screen restart skipped ("+reason+"): no saved screen stream");return false}
+        val previousId=(saved["streamConnectionID"] as? Number)?.toLong()
+        val stream=saved+("streamConnectionID" to freshStreamId(previousId))
         return synchronized(this){
-            log("screen restart begin ("+reason+")")
+            log("screen restart begin ("+reason+") streamConnectionID "+previousId+" -> "+stream["streamConnectionID"])
             runCatching{
                 setup.closeScreen()
                 val reply=setup.screen(stream)
                 val previous=video
                 video=connectedSocket(address,reply.dataPort)
                 runCatching{previous?.close()}
+                // 新流建立后要把这条流记成当前屏幕流，否则下一次重建又会退回到最初那个 ID。
+                screenStream=stream
                 // 这里必须用 recordAgain，不能调 start()：首次 prepare 时 `started` 已置 true，
                 // start() 会直接 return false 而不发 RECORD，新流就只被登记、永不消费——
                 // 车机那边表现为依然是黑屏，让这次重建白做、还误判成"协议层无解"。
@@ -1537,4 +1548,11 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             }
         }
     }
+
+    /** 每次重建换一个新流 ID。
+     *
+     *  用「旧值 +1」而不是随机数：量级跟原 ID 一致（不引入对端没见过的位数），日志里也能一眼
+     *  看出是第几次重建。这条 ID 由我们（发送端）选，只要没被本会话用过就合法。 */
+    private fun freshStreamId(previous:Long?):Long =
+        if(previous==null)System.nanoTime() and Long.MAX_VALUE else previous+1
 }
