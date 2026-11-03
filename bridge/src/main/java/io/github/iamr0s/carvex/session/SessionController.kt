@@ -166,12 +166,20 @@ class SessionController(
         val r=Resources{trace->
             BridgeStore.log(id,"Resource close type="+trace.type+" elapsedMs="+trace.elapsedMs+" error="+trace.error)
         }
+        // 清理管道要用的会话引用；必须在 cleanup 之前声明。见 [cleanup] 里的说明。
+        val ownedAir=java.util.concurrent.atomic.AtomicReference<AirSession?>(null)
         val cleanup=SessionTermination{
             // 任何终止路径（failure/finally/forceClose）都先尽力发整会话 TEARDOWN。
             // 不发 TEARDOWN 直接关 socket 会把车机的 iAP 状态机留在半开状态，
             // 重连时车机不回 iAP SYN（NO_SYN），必须重启车机才能恢复。
             // stopNormally 内部有 5 秒预算，用独立线程避免阻塞 timer 单线程。
-            val teardown=Thread({runCatching{activeAir?.stopNormally()}},"session-teardown")
+            //
+            // **这里必须用 [ownedAir] 而不是 `activeAir`**：`close()` 会先把 `activeAir` 置空，
+            // 再延迟执行本块，读字段永远读到 null —— 真车 2026-11-04 会话 `79055155` 就是这样
+            // 一个 TEARDOWN 都没发出（整份日志里 `TEARDOWN` 只有 2 次，都来自 Wi-Fi 掉线那条路径）。
+            val air=ownedAir.get()
+            if(air==null)BridgeStore.log(id,"session teardown skipped: no captured AirSession")
+            val teardown=Thread({runCatching{air?.stopNormally()}},"session-teardown")
             teardown.isDaemon=true;teardown.start();runCatching{teardown.join(6000)}
             r.close()
         };termination=cleanup
@@ -830,6 +838,9 @@ class SessionController(
                     link.linkEpoch==sourceBinding.epoch&&link.generation==sourceBinding.generation},
                 controlPublication=networkReady.publication)
             activeAir=air
+            // 终止管道要靠这个引用发 TEARDOWN：`activeAir` 会在 close() 里被立刻置空，
+            // 谁先谁后不确定，所以另存一份给清理用。见 [cleanup] 里的说明。
+            ownedAir.set(air)
             // Publication precedes this check: disconnect either captures this
             // AirSession, or prevents its preparation after an earlier null snapshot.
             if(disconnecting)throw CancellationException("User disconnect before AirPlay preparation")
@@ -1304,14 +1315,19 @@ class SessionController(
         applyBitrate?.invoke(value)?:BridgeStore.log(BridgeStore.state.value.id,"Bitrate saved for next connection")
     }
     override fun close(){applyBitrate=null;applyDynamicFps=null;carPlayAudioTestJob?.cancel();carWithAudioProbeJob?.cancel();job?.cancel()
-        // forceClose 会跑 cleanup 管道（含 TEARDOWN Binder 调用，最多 ~6 秒），不能在主线程同步执行。
-        // attempt() 的 finally 块会先尝试清理；此处延迟兜底，确保资源一定被释放。
+        // forceClose 会跑 cleanup 管道（含整会话 TEARDOWN 的 RTSP 往返，最多 ~6 秒），
+        // 不能在主线程同步执行。
+        //
+        // 原来这里先 `Thread.sleep(8000)` 再兜底，理由是"attempt() 的 finally 会先清理"。
+        // 真车 2026-11-04 会话 `79055155` 证明这个选择是错的：服务销毁时 attempt 的 finally
+        // 与这里同时进行，而那 8 秒里车机一直以为会话还活着；等兜底真正跑起来，
+        // 会话引用又已经被下面的 `activeAir=null` 清掉，于是 TEARDOWN 一次都没发出去。
+        // 现在立刻执行：SessionTermination 自己有 closing 闸门，不会重复清理。
         val t=termination;termination=null
-        if(t!=null){val th=Thread({runCatching{Thread.sleep(8000)};t.forceClose()},"session-forceClose");th.isDaemon=true;th.start()}
+        if(t!=null){val th=Thread({runCatching{t.forceClose()}},"session-forceClose");th.isDaemon=true;th.start()}
         activeAir=null;audioBridge=null;scope.cancel();timer.shutdownNow()
         ScreenRestartHook.trigger=null
-        HidProbeHook.probe=null}
-    /** 清理旧会话使后续 start() 能干净建立新连接：取消旧 attempt → 等 finally 清理 → 兜底 forceClose。
+        HidProbeHook.probe=null}    /** 清理旧会话使后续 start() 能干净建立新连接：取消旧 attempt → 等 finally 清理 → 兜底 forceClose。
      *  不发 TEARDOWN 就断开会把车机 iAP 状态机留在半开态，重连时车机不回 SYN（NO_SYN）。 */
     override suspend fun recycle(){
         val old=job
