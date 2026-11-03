@@ -845,8 +845,21 @@ class IapLink(input:InputStream, private val output:OutputStream,
         pendingSeq=txSlots.keys.firstOrNull()?:-1
         ackLock.notifyAll()
     }
-    private fun maxPayloadBytes():Int {
-        val checksumBytes=if(packetVersion==2)2 else 1
+    /**
+     * 最老的未确认帧已经等了多久（毫秒）；没有待确认帧返回 0。
+     *
+     * 车机健康时回 ACK 是 20~50ms（整份真车日志里没有例外）。所以这个数字一旦上到秒级，
+     * 就不是"车机慢"，而是它的 iAP 栈已经不处理输入了：真车 2026-11-04 16:51:00，车机收下
+     * StartIDPS 后不再 ACK，我们按 1 秒一次重传到第 12 次，它直接 `Connection reset by peer`，
+     * 车机屏幕当场冻住。等下去只会把重传风暴打满，早点松手。
+     */
+    fun oldestUnackedAgeMs():Long{
+        val now=System.nanoTime()
+        return synchronized(ackLock){
+            txSlots.values.filter{it.sentAtNanos>0L}.minOfOrNull{(now-it.sentAtNanos)/1_000_000L}?:0L
+        }
+    }
+    private fun maxPayloadBytes():Int {        val checksumBytes=if(packetVersion==2)2 else 1
         return maxPacket-8-2*checksumBytes
     }
     private fun missingFromEak(ack:Int,received:ByteArray):Set<Int>{

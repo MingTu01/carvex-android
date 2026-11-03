@@ -82,36 +82,6 @@ class SessionController(
         context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
             .putLong(KEY_NO_SYN_AT,System.currentTimeMillis()).apply()
     }
-    /** 上一段会话是什么时候结束的。见 [quietRemainingMs]。 */
-    private fun markSessionEnd(){
-        context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
-            .putLong(KEY_LAST_END_AT,System.currentTimeMillis()).apply()
-    }
-    /**
-     * 距上一段会话结束还差多少"静默时间"才允许再碰蓝牙。
-     *
-     * 真车 2026-11-04 一整晚的证据：CarWith 一断开就 forceStop 我们，2~3 秒后重开进程，
-     * 我们立刻重建整条链路（RFCOMM → iAP → Wi-Fi → AirPlay）。车机那头还在释放上一段会话，
-     * 于是按静默时间长短，失败位置逐层往里挪：
-     *
-     * ```
-     * 静默  0.3s / 0.4s / 3.3s  → iAP NO_SYN
-     * 静默  2.4s                → 车机 AirPlay 控制口 7000 ECONNREFUSED
-     * 静默  2.4s                → 收到 StartIDPS 后不再 ACK，12 秒后 Connection reset（车机死机）
-     * 静默 18.8s / 26.3s        → 一次成功
-     * ```
-     *
-     * 所以这里不是"重试越快越好"，而是**必须让它安静够久**。落盘而不是记在内存里，因为
-     * 每次重连都是新进程。
-     */
-    private fun quietRemainingMs():Long{
-        val at=context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).getLong(KEY_LAST_END_AT,0L)
-        if(at<=0L)return 0
-        val age=System.currentTimeMillis()-at
-        // 一分钟以前的记录不再约束：那是用户自己走了又回来，车机早就放开了。
-        if(age<0L||age>QUIET_MARKER_TTL_MS)return 0
-        return (QUIET_WINDOW_MS-age).coerceIn(0L,MAX_FIRST_WAIT_MS)
-    }
     private var carPlayAudioTestJob:Job?=null
     private var carWithAudioProbeJob:Job?=null
     private data class AudioProbeSample(val category:Int,val rate:Int,val channels:Int,val bytes:Int,val nonzero:Boolean)
@@ -152,16 +122,6 @@ class SessionController(
                 if(attempt<Int.MAX_VALUE)attempt++
                 if(!isActive)break
                 val id=BridgeStore.begin(attempt)
-                // 只有第一次尝试前等：静默窗口是给车机的，不是给我们自己的重试节奏。
-                if(attempt==1){
-                    val quiet=quietRemainingMs()
-                    if(quiet>0){
-                        BridgeStore.update(id){it.copy(stage=Stage.RETRY,
-                            detail="上一次会话刚结束，先让车机安静 "+((quiet+999)/1000)+" 秒")}
-                        BridgeStore.log(id,"car had less than "+QUIET_WINDOW_MS+"ms of quiet since the last session; holding "+quiet+"ms before touching Bluetooth (car-verified: every reconnect under 4s of quiet failed)")
-                        delay(quiet)
-                    }
-                }
                 try { attempt(id,options,fromHost,refreshSdpAfterNoSyn);break }
                 catch(t:kotlinx.coroutines.CancellationException){throw t}
                 catch(t:Exception){
@@ -211,8 +171,6 @@ class SessionController(
         // 清理管道要用的会话引用；必须在 cleanup 之前声明。见 [cleanup] 里的说明。
         val ownedAir=java.util.concurrent.atomic.AtomicReference<AirSession?>(null)
         val cleanup=SessionTermination{
-            // 记下会话结束的时刻：下一次启动要靠它决定"车机已经安静了多久"。
-            markSessionEnd()
             // 任何终止路径（failure/finally/forceClose）都先尽力发整会话 TEARDOWN。
             // 不发 TEARDOWN 直接关 socket 会把车机的 iAP 状态机留在半开状态，
             // 重连时车机不回 iAP SYN（NO_SYN），必须重启车机才能恢复。
@@ -1388,13 +1346,5 @@ class SessionController(
 /** NO_SYN 标记落盘位置（跨服务/控制器实例）；见 [SessionController.refreshSdpAfterNoSyn]。 */
 private const val PREFS_SESSION="session"
 private const val KEY_NO_SYN_AT="no_syn_at"
-/** 上一段会话结束的时刻；见 [SessionController.quietRemainingMs]。 */
-private const val KEY_LAST_END_AT="last_end_at"
-/** 重连前要求的静默窗口（真车实测阈值落在 3.3s 与 18.8s 之间）。 */
-private const val QUIET_WINDOW_MS=20_000L
-/** 单次启动最多等多久：CarWith 大约 7.5 秒就会收走没建好会话的进程，剩下的靠它下一次拉起继续攒。 */
-private const val MAX_FIRST_WAIT_MS=12_000L
-/** 超过这个岁数的结束记录不再约束重连。 */
-private const val QUIET_MARKER_TTL_MS=60_000L
 /** NO_SYN 之后多久之内认为"缓存通道号仍然可疑"。 */
 private const val NO_SYN_REFRESH_WINDOW_MS=10*60_000L

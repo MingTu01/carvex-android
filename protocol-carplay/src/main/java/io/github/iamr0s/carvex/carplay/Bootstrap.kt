@@ -111,6 +111,8 @@ object Bootstrap {
     /** Whole-handshake budget. The caller's stage deadline is the outer bound; this is the fallback that
      *  turns a silent accessory into a reported timeout instead of a hung attempt. */
     private const val HANDSHAKE_DEADLINE_MS=90_000L
+    /** 对端多久不回 ACK 就判它的 iAP 栈已经不处理输入了（健康值 20~50ms）。 */
+    private const val SILENT_PEER_ABORT_MS=3_000L
     /** After the Wi-Fi configuration arrives, how long a still-missing 0x5703 announcement is awaited. */
     private const val ANNOUNCEMENT_WAIT_MS=30_000L
     @SuppressLint("MissingPermission")
@@ -531,7 +533,16 @@ object Bootstrap {
                 if(transactions.ready&&startConfig==null&&handoffDeadline!=0L)activeDeadlines+=handoffDeadline
                 if(authDeadline!=0L&&!transactions.authenticationComplete)activeDeadlines+=authDeadline
                 if(identificationDeadline!=0L&&state.identificationState!=IdentificationState.ACCEPTED)activeDeadlines+=identificationDeadline
-                val command=link.poll(((activeDeadlines.min()-System.nanoTime())/1_000_000).coerceIn(1,500))?:continue
+                val command=link.poll(((activeDeadlines.min()-System.nanoTime())/1_000_000).coerceIn(1,500))
+                if(command==null){
+                    // 车机不再回 ACK：别再往它身上一秒一发地重传。见 IapLink.oldestUnackedAgeMs。
+                    val stuck=link.oldestUnackedAgeMs()
+                    if(stuck>SILENT_PEER_ABORT_MS)
+                        throw java.net.SocketTimeoutException("peer stopped acknowledging "+stuck+
+                            "ms ago; giving up instead of retransmitting into a dead iAP stack "+
+                            "(real car: the 12th StartIDPS retry ended in Connection reset and a frozen head unit)")
+                    continue
+                }
                 checkGeneration();checkDeadlines()
                 val receivedFields=command.fields
                 log(ProtocolTrace.event("IAP2","RFCOMM","rx","0x"+command.id.toString(16),"received",
