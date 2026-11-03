@@ -17,8 +17,12 @@ import io.github.iamr0s.carvex.protocol.api.ProtocolStack
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.*
 
@@ -198,6 +202,22 @@ class SessionController(
         var downTime=0L
         var lastX=0f
         var lastY=0f
+        /** 触摸注入**不能**在 AirPlay 事件读线程上等宿主。固件把每一条 `hidSendReport` 都交给
+         *  `openEventChannel` 那条串行循环处理（先 handle 再 reply），而 `IRemoteTouchListener.onTouchEvent`
+         *  是**同步** Binder（AIDL 没有 oneway）：宿主主线程一旦被语音识别、拉起导航这类事占住，
+         *  事件通道就停止读取与应答，车机的输入通道随之死掉，只能重启车机重连。
+         *  2026-11-03 真车现象（麦克风用完后触屏失效、需重启车机）与此一致；这里把它隔开。
+         *  队列有界：满了就丢掉这一条并记一次 —— 丢一条 MOVE 无害，且这条日志本身证明了"是宿主没接"。 */
+        val touchDispatch=ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,ArrayBlockingQueue<Runnable>(64),
+            ThreadFactory{task->Thread(task,"touch-inject").apply{isDaemon=true} })
+        val touchDropped=AtomicLong()
+        val touchDelivered=AtomicBoolean(false)
+        r.own(AutoCloseable{touchDispatch.shutdown()})
+        /** 触摸链路的静默丢弃点各自留一次证据：没有这些行，"车机没发"和"发了我们丢了"分不开。 */
+        val touchDropsLogged=ConcurrentHashMap.newKeySet<String>()
+        fun touchDropOnce(key:String,line:String){
+            if(touchDropsLogged.add(key))BridgeStore.log(id,line)
+        }
         val keyLock=Any()
         val musicLock=Any()
         val latestMusic=AtomicReference<NowPlayingUpdate.Track?>(null)
@@ -545,7 +565,12 @@ class SessionController(
                 touchClosed=true
                 if(pressed){
                     val cancel=MotionEvent.obtain(downTime,SystemClock.uptimeMillis(),MotionEvent.ACTION_CANCEL,lastX,lastY,0).apply{source=InputDevice.SOURCE_TOUCHSCREEN}
-                    try{runCatching{hostTouch(cancel)}}finally{cancel.recycle();pressed=false}
+                    // 排到注入线程的队尾，不能在这里直接发：队列里可能还有更早的 DOWN/MOVE，
+                    // 先发 CANCEL 再补一个 MOVE 会让宿主收到"按下"，留下一根按死的手指。
+                    val queued=try{touchDispatch.execute{try{runCatching{hostTouch(cancel)}}finally{cancel.recycle()}};true}
+                        catch(rejected:RejectedExecutionException){false}
+                    if(!queued){cancel.recycle()}
+                    pressed=false
                 }
             }
         })
@@ -580,16 +605,35 @@ class SessionController(
         val carPlayHost=object:CarPlayHost{
             override fun log(message:String)=BridgeStore.log(id,message)
             override fun touch(sample:TouchSample):Boolean=synchronized(touchLock){
-                if(ended.get()||touchClosed||!phoneHasScreen.get())return@synchronized false
-                val mapped=projectionGeometry.get()?.map(sample)?:return@synchronized false
+                if(ended.get()||touchClosed)return@synchronized false
+                if(!phoneHasScreen.get()){
+                    touchDropOnce("screen","touch dropped: the car took screen ownership (phoneHasScreen=false); no injection until it hands it back")
+                    return@synchronized false
+                }
+                val mapped=projectionGeometry.get()?.map(sample)?:run{
+                    touchDropOnce("geometry","touch dropped: video geometry not chosen yet; report arrived but has nowhere to go")
+                    return@synchronized false
+                }
                 val now=SystemClock.uptimeMillis()
                 val action=when{sample.pressed&&!pressed->{downTime=now;MotionEvent.ACTION_DOWN};sample.pressed->MotionEvent.ACTION_MOVE;pressed->MotionEvent.ACTION_UP;else->return@synchronized true}
                 pressed=sample.pressed;lastX=mapped.x;lastY=mapped.y
                 val event=MotionEvent.obtain(downTime,now,action,mapped.x,mapped.y,0).apply{source=InputDevice.SOURCE_TOUCHSCREEN}
-                try{
-                    val accepted=hostTouch(event)||localContentRef.get()?.touch(event)==true
-                    inputs.incrementAndGet();accepted
-                }finally{event.recycle()}
+                // 事件的所有权交给注入线程，由它 recycle。这里只回"已入队"：应答车机不能再等宿主。
+                return try{
+                    touchDispatch.execute{
+                        try{
+                            val delivered=hostTouch(event)||localContentRef.get()?.touch(event)==true
+                            // 一条就够了：它证明"车机发出 → 我们解码 → 坐标映射 → 宿主收下"整条链通。
+                            if(delivered){if(touchDelivered.compareAndSet(false,true))BridgeStore.log(id,"touch injection: first sample delivered to the host")}
+                            else touchDropOnce("refused","touch reached us but no local sink accepted it (host touch listener absent and no local page)")
+                        }finally{event.recycle()}
+                    }
+                    inputs.incrementAndGet();true
+                }catch(rejected:RejectedExecutionException){
+                    val dropped=touchDropped.incrementAndGet()
+                    touchDropOnce("queue","touch injection queue full: host has not returned from onTouchEvent; dropping samples (dropped="+dropped+")")
+                    event.recycle();false
+                }
             }
             override fun key(prefix:String,usage:Int,down:Boolean):Boolean=onCarPlayEvent(CarPlayEvents.key(prefix,usage,down))
             override fun failure(cause:Throwable)=failure(cause)
@@ -746,8 +790,12 @@ class SessionController(
                 if(ended.get()||touchClosed)return@synchronized false
                 if(!phone&&pressed){
                     val cancel=MotionEvent.obtain(downTime,SystemClock.uptimeMillis(),MotionEvent.ACTION_CANCEL,lastX,lastY,0).apply{source=InputDevice.SOURCE_TOUCHSCREEN}
-                    val accepted=try{hostTouch(cancel)}finally{cancel.recycle()}
-                    if(!accepted)return@synchronized false
+                    // 与拆除时同理：排进注入队列，不在这里等宿主。这条回调是在事件读线程、
+                    // 且 `command()` 正持有 commandLock 的时候被调用的 —— 在这里做同步 Binder
+                    // 等于把整条控制通道押在宿主主线程上。
+                    val queued=try{touchDispatch.execute{try{runCatching{hostTouch(cancel)}}finally{cancel.recycle()}};true}
+                        catch(rejected:RejectedExecutionException){false}
+                    if(!queued)cancel.recycle()
                     pressed=false
                 }
                 phoneHasScreen.set(phone)

@@ -100,6 +100,9 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
     private val hidArmUuids=java.util.Collections.synchronizedList(mutableListOf<String>())
     /** HID 报告计数：用来在本次会话的第一条报告上留一条"通道已通"的痕迹。 */
     private val hidReportsSeen=java.util.concurrent.atomic.AtomicLong()
+    /** 触摸报告限流：头 8 条全留证，之后每 2 s 一条。见 `hidSendReport` 处的说明。 */
+    private val hidReportLogged=java.util.concurrent.atomic.AtomicLong()
+    private val hidReportLogAt=java.util.concurrent.atomic.AtomicLong(0)
     /** 只记一次的日志键：触摸/未知设备报告很频繁，每次都记会把真正有用的行冲掉。 */
     private val hidLogSeen=java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val iapEventSeen=java.util.concurrent.atomic.AtomicInteger(0)
@@ -923,12 +926,6 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                 // 没有这一行，就是"报告根本没进来"——这是分辨"车机没发"与"我们没认"的分界线。
                 if(hidReportsSeen.getAndIncrement()==0L)
                     log("OBSERVE hid report first uuid="+reportUuid+" len="+(data?.size?:-1))
-                // 每条报告都留原始字节：此前只打首条，所以"车机到底发了哪些索引值"无从判断。
-                // 车机侧的发送端只声明了 Shuffle/Repeat（固件 sendCarPlayMusicCmd 仅引用
-                // kHIDMediaButtonIndexShuffle / kHIDMediaButtonIndexRepeat），
-                // 实测字节才能确认"上一曲/下一曲"是否真的走 HID，以及它用哪个索引。
-                log("OBSERVE hid report uuid="+reportUuid+" len="+(data?.size?:-1)+
-                    " hex="+(data?.let{hex(it,32)}?:"-"))
                 // Report validation is independent of display availability.
                 if(data==null){
                     logOnce("hid:bad-report:"+reportUuid,"OBSERVE hid report not-bytes uuid="+reportUuid)
@@ -936,8 +933,20 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                 }
                 val result=hidKeys.report(reportUuid,data,
                     s?.takeIf{it.touchId==reportUuid}?.touch,s?.width?:1,s?.height?:1,input,carPlayKey)
+                // 触摸报告是 100 Hz 量级的坐标流，而这条处理链跑在**必须应答车机**的事件读线程上；
+                // 每一行日志都要过两条正则再把 2000 行列表复制一遍，逐条落盘等于自己把事件通道拖住。
+                // 头 8 条原样留证（够读出报文格式），之后每 2 s 一条带计数。
+                // 按键报告不节流：它们本来就稀疏，而"车机到底发了哪些索引值"只能从原始字节看出来。
+                val seen=hidReportLogged.incrementAndGet()
+                val now=System.nanoTime()
+                val previous=hidReportLogAt.get()
+                val throttled=result.touchMatched&&seen>8&&now-previous<2_000_000_000L
+                if(!throttled){
+                    hidReportLogAt.set(now)
+                    log("OBSERVE hid report uuid="+reportUuid+" len="+data.size+" hex="+hex(data,32)+" #"+seen)
+                }
                 if(result.recognized){
-                    log("OBSERVE HID dispatch uuid="+reportUuid+" touch="+result.touchMatched+" keys="+
+                    if(!throttled)log("OBSERVE HID dispatch uuid="+reportUuid+" touch="+result.touchMatched+" keys="+
                         result.decoded.joinToString("|"){(prefix,usages)->prefix+":"+usages.sorted().joinToString(","){it.toString(16)}}+
                         " forwarded="+result.accepted+" decoderMisses="+result.decodeFailures)
                     // The report is supported and decoded. Local consumer availability is a
