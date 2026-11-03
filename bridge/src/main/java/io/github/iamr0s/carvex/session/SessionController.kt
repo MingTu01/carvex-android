@@ -51,6 +51,12 @@ class SessionController(
     /** Wi-Fi parameters from the last successful handshake: a retry reuses them instead of asking the
      *  accessory again, and a re-handshake can tell from them that nothing changed. */
     @Volatile private var lastBootstrap:WifiBootstrap?=null
+    /** 上一次尝试以 iAP `NO_SYN` 收场：下一轮连接前强制重做一次 SDP。
+     *
+     *  必须是**控制器字段**而不是重试循环里的局部变量：CarWith 重新绑定会再调一次 `start()`，
+     *  那会起一个新的循环。20032 的真机日志就是这样丢了标记 —— NO_SYN 之后 320ms 就有一个
+     *  新 `start()`，于是刷新永远不触发。这里让它在控制器生命周期内累积。 */
+    @Volatile private var refreshSdpAfterNoSyn=false
     private var carPlayAudioTestJob:Job?=null
     private var carWithAudioProbeJob:Job?=null
     private data class AudioProbeSample(val category:Int,val rate:Int,val channels:Int,val bytes:Int,val nonzero:Boolean)
@@ -78,20 +84,17 @@ class SessionController(
         if(adapter==null||!adapter.isEnabled){reject("蓝牙未开启：请先在系统设置中打开蓝牙，再回到本页连接");return}
         job=scope.launch {
             var attempt=0
-            // 上一轮以 iAP NO_SYN 收场时，下一轮连接前强制重做一次 SDP。
-            // 只对 NO_SYN 生效：其它失败（权限、配对、被拒）与缓存通道号无关，不该多付一次 SDP 往返。
-            var refreshSdp=false
             while(isActive){
                 if(attempt<Int.MAX_VALUE)attempt++
                 if(!isActive)break
                 val id=BridgeStore.begin(attempt)
-                try { attempt(id,options,fromHost,refreshSdp);break }
+                try { attempt(id,options,fromHost,refreshSdpAfterNoSyn);break }
                 catch(t:kotlinx.coroutines.CancellationException){throw t}
                 catch(t:Exception){
                     currentCoroutineContext().ensureActive()
                     BridgeStore.log(id,"failure: "+t.javaClass.simpleName+" "+(t.message?:""))
                     // 一旦确认缓存通道号坏过就一直刷新，不在后续失败里又退回旧缓存。
-                    refreshSdp=refreshSdp||generateSequence<Throwable>(t){it.cause}.any{cause->
+                    refreshSdpAfterNoSyn=refreshSdpAfterNoSyn||generateSequence<Throwable>(t){it.cause}.any{cause->
                         cause is java.net.SocketTimeoutException&&cause.message?.contains("NO_SYN")==true
                     }
                     // 空消息的异常（例如候选为空时抛的那条 IllegalStateException）只靠类型无法定位，把栈截断打出来。
