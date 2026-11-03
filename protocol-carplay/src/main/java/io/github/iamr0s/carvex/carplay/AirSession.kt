@@ -1524,8 +1524,12 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                 val previous=video
                 video=connectedSocket(address,reply.dataPort)
                 runCatching{previous?.close()}
-                setup.start()
-                log("screen restart done ("+reason+") dataPort="+reply.dataPort)
+                // 这里必须用 recordAgain，不能调 start()：首次 prepare 时 `started` 已置 true，
+                // start() 会直接 return false 而不发 RECORD，新流就只被登记、永不消费——
+                // 车机那边表现为依然是黑屏，让这次重建白做、还误判成"协议层无解"。
+                // recordAgain 绕开 `started` 门，正是为"已成立的会话再建一条流"准备的。
+                val recorded=setup.recordAgain("screen restart")
+                log("screen restart done ("+reason+") dataPort="+reply.dataPort+" record="+recorded)
                 true
             }.getOrElse{t->
                 log("screen restart failed ("+reason+"): "+t.javaClass.simpleName+" "+(t.message?:""))
