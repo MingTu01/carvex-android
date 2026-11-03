@@ -69,6 +69,8 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
     @Volatile private var screen:Screen?=null
     /** Owns teardown even if preparation fails before a video encoder exists. */
     @Volatile private var setupLifecycle:AirPlaySetupSession?=null
+    /** 视频 SETUP 用的流描述，保存下来供会话中途重建屏幕流（见 [restartScreen]）。 */
+    @Volatile private var screenStream:Map<String,Any?>?=null
     /** 本次会话的连接 URL（`rtsp://<host>/<u64>`）：SETUP/RECORD/TEARDOWN/音频 SETUP 共用。 */
     @Volatile private var connectionPath:String?=null
     @Volatile var receiverAudio:List<AudioCapabilities.Entry> = emptyList();private set
@@ -711,7 +713,7 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         log("video SETUP keys="+stream.entries.joinToString(","){it.key+":"+valueType(it.value)})
         // 四条请求共用会话开始时生成的连接 URL（见 initial SETUP 处的说明）。
         val mediaPath=sessionPath
-        val screenReply=try{setupSession.screen(stream)}
+        val screenReply=try{setupSession.screen(stream.also{screenStream=it})}
             catch(t:RtspClient.StatusException){logSetupEncryptionRoute("video",t.status);throw t}
         // 链路已可用于上行消息：打开 Now Playing 发布器，并把识别阶段暂存的 5000 订阅补上，
         // 否则车机的订阅在 Bootstrap 里被当未知命令丢弃，之后永远不会收到 5001。
@@ -1499,5 +1501,36 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         // 先拆流再关媒体 socket：顺序反了会让接收端把"连接断"当成异常而不是正常结束。
         teardownScreen("close")
         runCatching{video?.close()}
+    }
+
+    /** 会话中途重建屏幕流：TEARDOWN → SETUP → 重连数据口 → RECORD。
+     *
+     *  2026-11-03 真车（会话 `7dbf1b68`）：导航态下车机把**显示与输入一起关掉**——
+     *  `hidSendReport` 0 条、按 home 再切回黑屏，但音频照收（音乐全程正常），
+     *  而且不对我们发任何命令（`/feedback` 仍 98/98 回 200）。
+     *  重发 `hidSetInputMode`（20037 试过，4 台全 200）无效，说明它不是在协议层拒绝，
+     *  而是把整条显示管线撂下了。这里只剩一个动作能逼它重建：重新 SETUP 屏幕流。
+     *
+     *  调用方随后应触发一次关键帧，让编码器把新的 SPS/PPS 发到新数据口，
+     *  否则新流里没有可解码的起点。 */
+    fun restartScreen(reason:String):Boolean {
+        val setup=setupLifecycle?:run{log("screen restart skipped ("+reason+"): no SETUP session");return false}
+        val stream=screenStream?:run{log("screen restart skipped ("+reason+"): no saved screen stream");return false}
+        return synchronized(this){
+            log("screen restart begin ("+reason+")")
+            runCatching{
+                setup.closeScreen()
+                val reply=setup.screen(stream)
+                val previous=video
+                video=connectedSocket(address,reply.dataPort)
+                runCatching{previous?.close()}
+                setup.start()
+                log("screen restart done ("+reason+") dataPort="+reply.dataPort)
+                true
+            }.getOrElse{t->
+                log("screen restart failed ("+reason+"): "+t.javaClass.simpleName+" "+(t.message?:""))
+                false
+            }
+        }
     }
 }
