@@ -421,6 +421,9 @@ class IapLink(input:InputStream, private val output:OutputStream,
                 if(closed.get()||token!=preSynDeadlineToken||handshakeComplete())return@schedule
                 val timeout=java.net.SocketTimeoutException("iAP link did not synchronize within "+budget+"ms (NO_SYN)")
                 log("iAP NO_SYN: no peer SYN within "+budget+"ms; tearing the link down")
+                // 记在判定发生的地方：上层那个重试循环的 catch 在真机上从不执行（服务先被销毁、
+                // job 先被取消），所以标记只能由这里落。见 IapNoSynHint。
+                IapNoSynHint.mark()
                 error=timeout;close();terminalFailure=timeout
             }
             terminalFailure?.let(failure)

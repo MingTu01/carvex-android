@@ -184,12 +184,17 @@ object Bootstrap {
         val bonded=device.bondState==BluetoothDevice.BOND_BONDED
         // 只有重试路径才付这次 SDP 往返的代价：首次连接沿用缓存快路径（目前是能连通的），
         // 上一次以 NO_SYN 收场时才怀疑缓存里的通道号已经过期。
-        if(refreshSdpBeforeConnect)refreshSdp(context,device,log)
+        //
+        // 判据有两个来源：调用方的显式参数，以及 [IapNoSynHint] —— 后者是真机上唯一有效的那个，
+        // 因为 `SessionController` 重试循环里的 catch 从来不执行（服务先被销毁、job 先被取消），
+        // 所以标记只能由 `IapLink` 在判出 NO_SYN 的那一刻自己落。
+        val refresh=refreshSdpBeforeConnect||IapNoSynHint.recent()
+        if(refresh)refreshSdp(context,device,log)
         val servicePlan=WiapBluetoothPolicy.plan(device.uuids?.map{it.uuid},o.listen)
         log("Bluetooth target paired="+bonded+" uuidSource=platform_cache observation="+servicePlan.observation+
             " uuidCount="+servicePlan.cachedUuidCount+
-            " freshness="+(if(refreshSdpBeforeConnect)"refreshed" else "unverified")+
-            " fullSdp="+(if(refreshSdpBeforeConnect)"queried-channel-unverified" else "unavailable"))
+            " freshness="+(if(refresh)"refreshed" else "unverified")+
+            " fullSdp="+(if(refresh)"queried-channel-unverified" else "unavailable"))
         // 缓存里有 UUID 但一个都不是 WiAP 时，只报 NO_WIAP_HINT 无法判断对端到底发布了什么。
         // 这里是平台缓存原文（不是 SDP attribute4 结论），只用于看清对端角色。
         log("Bluetooth cached uuids="+(device.uuids?.joinToString(","){"0x"+it.uuid.toString()}?.ifEmpty{"none"}?:"unavailable"))
