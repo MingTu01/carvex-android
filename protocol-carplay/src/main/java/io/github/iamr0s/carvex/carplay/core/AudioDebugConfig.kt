@@ -29,16 +29,20 @@ object AudioDebugConfig {
     /** 未显式配置音量时使用的默认值（dB）。iPhone 常用 0 dB 表示原始增益。 */
     const val DEFAULT_VOLUME_DB: Double = 0.0
 
-    /** T2：主音频改走 `type=100/media` + 裸 PCM16（`audioFormat=0x8000` = bit15 `lpcm` 48000/2）。
+    /** PCM 优先：三条音频流（media/alert/speechRecognition）都走车机广告的裸 PCM16。
      *
-     *  为什么值得单独试一次：车机 `/info` 的条目里 `#4 type=100/media outputMask=8000`，
-     *  只广告**裸 PCM16 48k/2** 这一种格式。而当前走的是 `#8 type=102/media outputMask=800000`
-     *  = AAC-LC 48k/2/1024 —— 那条路上同时叠了四层未验证的东西：AAC 编码器产出、
-     *  ADTS 封装、A-44 的 CBCFrame 帧密码、`spf=1024` 分包。真实音频数据从 CarWith 到本端
-     *  已经实测健康（7680B/40ms 实时），所以问题只可能在后面这四层里；PCM 路径把四层
-     *  一次性去掉三（无编码、无 ADTS、A-44 里 100 在 G=0 下**不建密码器**）。
+     *  **已在实车证实**（build 20030）：`100/media` + `audioFormat=0x8000` + 无帧密码，
+     *  车机出声。此前 `type=102/media` + AAC-LC + CBCFrame 一直是"包在发、日志全绿、全程静音"。
      *
-     *  代价是带宽：48k/2/16bit = 192 kB/s，是 AAC 的 8 倍，但同一条 UDP 已经在跑，
-     *  而且这是诊断而非产品形态。 */
+     *  为什么 category 2/3 也一起走：车机 `/info` 对三条流都广告了 PCM，
+     *  而两套压缩编码在本端建不起来（20030 真机：category 3 报
+     *  `AAC configuration differs from announced audioFormat: objectType=39 rate=24000 ch=1
+     *  frames=512`，category 2 报 `ELD resilience/SBR configuration unsupported`），
+     *  于是提示音与语音输出完全不工作。PCM 是唯一有实证的选择。
+     *
+     *  代价是带宽（48k/2 → 192 kB/s，AAC 的 8 倍），且放弃压缩编码的容错。
+     *  这两点应该在压缩编码修好之后重新评估，而不是把 PCM 当成最终形态。
+     *
+     *  ADB 开关名沿用 `pcmMedia`（已在真机用过，不改以免破坏记录里的命令）。 */
     @Volatile var pcmMedia: Boolean = true
 }

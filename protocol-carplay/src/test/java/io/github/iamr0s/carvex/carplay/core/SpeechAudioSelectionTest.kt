@@ -18,11 +18,22 @@ class SpeechAudioSelectionTest {
         AudioCapabilities.Entry(100,"speechRecognition",mask,mask))
 
     @Test fun availableCompressedSpeechIsNotOverriddenByAdvertisedPcm() {
+        // 关掉 PCM 优先时保持原有优先序：能编码就用压缩，不被广告的 PCM 抢走。
         for(category in listOf(2,3)){
             val selected=CarPlayAudioPlan.selectPlayback(entries(opus or pcm),category,source,
-                requireDuplex=category==3){true}!!
+                requireDuplex=category==3,preferPcm=false){true}!!
             assertEquals(CarPlayAudioPlan.Codec.OPUS,selected.format.codec)
             assertEquals(opus,selected.format.bit)
+        }
+    }
+    /** 默认（PCM 优先）打开后，广告了 PCM 就必须取 PCM —— 真车 20030 上压缩编码器
+     *  对 alert/speechRecognition 都建不起来，取压缩等于整条流不可用。 */
+    @Test fun pcmPreferenceWinsOverAnAvailableEncoderWhenPcmIsAdvertised() {
+        for(category in listOf(2,3)){
+            val selected=CarPlayAudioPlan.selectPlayback(entries(opus or pcm),category,source,
+                requireDuplex=category==3,preferPcm=true){true}!!
+            assertEquals(CarPlayAudioPlan.Codec.PCM16,selected.format.codec)
+            assertEquals(pcm,selected.format.bit)
         }
     }
     @Test fun pcmOnlyPeerStillHasNavigationAndDuplexAssistant() {

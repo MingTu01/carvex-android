@@ -109,12 +109,17 @@ object CarPlayAudioPlan {
     /** Intersect peer formats with local codecs. An input request must also have a capture path;
      * merely having an output encoder is insufficient for duplex SETUP.
      *
-     *  [preferPcmMedia] 是 T2 的真机 A/B 自变量（见 [AudioDebugConfig.pcmMedia]）。做成参数
-     *  而不是只读全局，是为了让测试能确定性地钉住两个方向，不受可变全局状态与用例顺序影响。 */
+     *  [preferPcm] 是 PCM 优先开关（见 [AudioDebugConfig.pcmMedia]）。做成参数而不是只读全局，
+     *  是为了让测试能确定性地钉住两个方向，不受可变全局状态与用例顺序影响。
+     *
+     *  为什么三个 category 一起走 PCM：车机 `/info` 对三条流**都**广告了裸 PCM，而两套压缩
+     *  编码在本端都建不起来（真机 20030：`AAC configuration differs from announced audioFormat`
+     *  与 `ELD resilience/SBR configuration unsupported`，category 2/3 因此完全不可用）。
+     *  PCM 这条路已经在 category 1 上被实车证明能出声，是唯一有实证的选择。 */
     fun selectPlayback(entries:List<AudioCapabilities.Entry>,category:Int,source:PcmFormat,
         requireDuplex:Boolean=false,supportsCapture:(Format)->Boolean={true},
         excludedRoutes:Set<Route> = emptySet(),
-        preferPcmMedia:Boolean=AudioDebugConfig.pcmMedia,
+        preferPcm:Boolean=AudioDebugConfig.pcmMedia,
         supportsEncoded:(Format)->Boolean):Selection? {
         val choices=when(category){
             1->listOf(media,mediaLowLatency)
@@ -122,15 +127,14 @@ object CarPlayAudioPlan {
             3->listOf(assistant)
             else->throw IllegalArgumentException()
         }
-        // T2（诊断，见 [AudioDebugConfig.pcmMedia]）：主音频优先落到 `100/media` 的裸 PCM16。
-        //
-        // 放在这里而不是改 [choices] 的顺序，是因为顺序改动会影响 category 2/3 与所有调用方；
-        // 这里只拦 category=1，且**只有车机真的广告了可发的 PCM16 才生效**——否则照旧走下面的
-        // 压缩编码选择。`pcmCompatibility` 用的 mask 是车机 `/info` 的 outputMask，
-        // `wireSupported` 又会拒掉 type102 上的 PCM，所以这条分支天然只会命中 100/101。
-        if(category==1&&preferPcmMedia){
-            val route=mediaLowLatency
-            if(route !in excludedRoutes){
+        // PCM 优先：**只有车机真的广告了可发的 PCM16 才生效**，否则无声退回下面的压缩选择。
+        // `pcmCompatibility` 用的 mask 是车机 `/info` 的 outputMask，`wireSupported` 又会拒掉
+        // type102 上的 PCM —— 所以 category 1 的 `media(102)` 在这里必然交出 null，
+        // 自然落到 `mediaLowLatency(100)`，与 T2 已验证的行为完全一致。
+        if(preferPcm){
+            for(route in choices){
+                if(route in excludedRoutes)continue
+                if(route.type!=100&&route.type!=101)continue
                 fun pcmInputSupported(format:Format)=!requireDuplex||(duplexSupported(entries,route,format)&&supportsCapture(format))
                 val pcm=pcmCompatibility(entries,route,source)?.takeIf(::pcmInputSupported)
                 if(pcm!=null)return Selection(route,pcm)
@@ -155,11 +159,11 @@ object CarPlayAudioPlan {
     /** Existing local prewarm policy (3,2,1), retained for this field/format repair.
      * It is not a firmware guarantee of stream ordering or same-type concurrency. */
     fun bootstrapPlayback(entries:List<AudioCapabilities.Entry>,source:PcmFormat,
-        preferPcmMedia:Boolean=AudioDebugConfig.pcmMedia,
+        preferPcm:Boolean=AudioDebugConfig.pcmMedia,
         supportsEncoded:(Format)->Boolean):List<Selection> =
         listOf(3,2,1).mapNotNull{category->
             selectPlayback(entries,category,source,requireDuplex=category==3,
-                preferPcmMedia=preferPcmMedia,supportsEncoded=supportsEncoded)
+                preferPcm=preferPcm,supportsEncoded=supportsEncoded)
         }.distinctBy{it.route.type to it.route.purpose}
     /** 麦克风（车机采集方向）的候选序。
      *
