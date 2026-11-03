@@ -28,4 +28,17 @@ object AudioDebugConfig {
 
     /** 未显式配置音量时使用的默认值（dB）。iPhone 常用 0 dB 表示原始增益。 */
     const val DEFAULT_VOLUME_DB: Double = 0.0
+
+    /** T2：主音频改走 `type=100/media` + 裸 PCM16（`audioFormat=0x8000` = bit15 `lpcm` 48000/2）。
+     *
+     *  为什么值得单独试一次：车机 `/info` 的条目里 `#4 type=100/media outputMask=8000`，
+     *  只广告**裸 PCM16 48k/2** 这一种格式。而当前走的是 `#8 type=102/media outputMask=800000`
+     *  = AAC-LC 48k/2/1024 —— 那条路上同时叠了四层未验证的东西：AAC 编码器产出、
+     *  ADTS 封装、A-44 的 CBCFrame 帧密码、`spf=1024` 分包。真实音频数据从 CarWith 到本端
+     *  已经实测健康（7680B/40ms 实时），所以问题只可能在后面这四层里；PCM 路径把四层
+     *  一次性去掉三（无编码、无 ADTS、A-44 里 100 在 G=0 下**不建密码器**）。
+     *
+     *  代价是带宽：48k/2/16bit = 192 kB/s，是 AAC 的 8 倍，但同一条 UDP 已经在跑，
+     *  而且这是诊断而非产品形态。 */
+    @Volatile var pcmMedia: Boolean = true
 }

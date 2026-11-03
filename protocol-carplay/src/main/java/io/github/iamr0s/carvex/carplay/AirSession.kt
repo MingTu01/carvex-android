@@ -1086,6 +1086,11 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             val built=when{
                 options.audioPlaintext->SapAudioCrypto.plain()
                 mfiMaterial==null->throw UnsupportedOperationException("Audio RTP profile requires HomeKit or MFi/SAP key material")
+                // A-44（G=0 分派表）：100/101/106/107 **不建密码器**。接收端在 stream+0xa0
+                // 没有密码上下文时按明文放行并返回成功（AirPlaySender 0x2519c0acc → 0）。
+                // 这条分支以前落到下面的 `else -> CTR`，等于给一条明文管线喂 AES-CTR 密文：
+                // 包在发、车机也不报错、全程无声。raw 100/101 的发送侧就该是明文。
+                route.type in setOf(100,101,106,107)->SapAudioCrypto.plain()
                 route.type==102->{
                     val (frameKey,frameIv)=mfiMaterial.streamFrameKeyIv(id)
                     SapAudioCrypto.cbcFrame(frameKey,frameIv)
@@ -1094,8 +1099,9 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             }
             built
         }else null
-        if(sapAudio?.plaintext==true)
-            log("Audio category="+category+" MFi/SAP diagnostic: payload sent as PLAINTEXT; this run cannot confirm the AES-CTR wire format")
+        if(sapAudio!=null)
+            log("Audio category="+category+" type="+route.type+" sapFrameCipher="+sapAudio.modeName+
+                (if(sapAudio.plaintext)" (A-44 G=0: no cryptor for this stream type, or diagnostic plaintext)" else ""))
         val key=if(homeKitSecret!=null)Crypto.hkdf(homeKitSecret,"DataStream-Salt$id","DataStream-Output-Encryption-Key")
             else ByteArray(0)
         // 麦克风只有 HomeKit 的输入密钥方向实现了。SAP 下不声明 input：宁可少一路麦克风，
@@ -1244,13 +1250,17 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
                 }
             }
             val transport=if(candidate.codec==CarPlayAudioPlan.Codec.PCM16){
-                // SAP 只实现了压缩音频（AAC）的 CTR 封装。PCM 分支还没接 CTR，
-                // 明确失败而不是退回明文或错密钥，免得给车机送一包解不开的东西。
-                if(sapAudio!=null)throw UnsupportedOperationException(
-                    "SAP audio: PCM16 output path is not implemented; the receiver must offer a compressed media format")
+                // SAP 下 PCM 是 A-44 里唯一天然成立的组合：raw 100/101 在 G=0 **不建密码器**，
+                // 接收端按明文放行；所以 12 字节头 + BE PCM 就是规范线上格式，不需要任何封装。
+                // 只有非明文的 SAP 档（理论上不该出现在 100/101 上）才明确失败 —— 不退回错密钥。
+                if(sapAudio!=null&&!sapAudio.plaintext)
+                    throw UnsupportedOperationException(
+                        "SAP audio: PCM16 on type="+route.type+" would need an encrypted record, but A-44 gives none")
                 CarPlayMediaAudio(udp,address,port,format,category,route.type,key,retransmit,takeOwnership,releaseStream,log,redEnabled,
                     canSend={!stopping&&(category==2||audioOwnership.allowsMainSend())},
-                    receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps)
+                    receiverHighAccuracyTimestamps=receiverHighAccuracyTimestamps,
+                    sapCrypto=sapAudio,
+                    wirePtOverride=if(options.audioRawWirePt)route.type else null)
             }
             else CarPlayCompressedAudio.create(udp,address,port,category,route.type,candidate,key,retransmit,takeOwnership,releaseStream,log,
                 canSend={!stopping&&(category==2||audioOwnership.allowsMainSend())},redEnabled=redEnabled,

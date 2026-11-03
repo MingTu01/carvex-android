@@ -76,6 +76,22 @@ class AudioDebugReceiver : BroadcastReceiver() {
             sb.append(" volume=$v")
             changed = true
         }
+        // pcmMedia: 主音频改走 100/media + 裸 PCM16（T2 实验）
+        if (intent.hasExtra("pcmMedia")) {
+            val v = intent.getBooleanExtra("pcmMedia", true)
+            AudioDebugConfig.pcmMedia = v
+            editor.putBoolean("audioPcmMedia", v)
+            sb.append(" pcmMedia=$v")
+            changed = true
+        }
+        // audioVolumeDb: 主音频增益（dB）。NaN 表示不宣告，此时走 AudioDebugConfig 的 0 dB 默认值。
+        if (intent.hasExtra("volumeDb")) {
+            val v = intent.getDoubleExtra("volumeDb", 0.0)
+            editor.putFloat("audioVolumeDb", v.toFloat())
+            BridgeStore.configure(o.copy(audioVolumeDb = v))
+            sb.append(" volumeDb=$v")
+            changed = true
+        }
         if (changed) editor.apply()
 
         Log.i(TAG, sb.toString())

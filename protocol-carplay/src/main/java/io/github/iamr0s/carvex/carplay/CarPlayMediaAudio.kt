@@ -14,7 +14,13 @@ class CarPlayMediaAudio(private val socket:DatagramSocket,private val peer:InetA
     private val pcmFormat:PcmFormat,private val category:Int,private val streamType:Int,private val key:ByteArray,private val retransmit:AudioRtpRetransmit?,private val ownership:suspend ()->Unit,
     private val stopped:()->Unit,private val log:(String)->Unit,private val redEnabled:Boolean=false,
     private val canSend:()->Boolean={true},
-    receiverHighAccuracyTimestamps:Boolean=false):NegotiatedAudioTransport {
+    receiverHighAccuracyTimestamps:Boolean=false,
+    /** MFi/SAP 路线：非空时改用 [MediaAudioPackets.sapPacket]（12 字节头 + 等长变形，无 tag、无 nonce 尾）。
+     *  HAP 路线传 null，行为与此前完全一致。`key` 在 SAP 下是空数组（见 AirSession），
+     *  所以这里**不能**回落到 ChaCha 的 [MediaAudioPackets.packet]。 */
+    private val sapCrypto:SapAudioCrypto?=null,
+    /** 线上 PT 逃生阀，见 [MediaAudioPackets.wirePayloadType]。null = 规范映射（100→100）。 */
+    private val wirePtOverride:Int?=null):NegotiatedAudioTransport {
     private val closed=AtomicBoolean(false)
     private val lock=Mutex()
     override val ready:Boolean get()=!closed.get()&&!socket.isClosed
@@ -41,6 +47,10 @@ class CarPlayMediaAudio(private val socket:DatagramSocket,private val peer:InetA
             "; source pacing independent; high-accuracy network-clock anchors not implemented")
         log("Audio RED diagnostic category="+category+" codec=PCM16 negotiatedRED="+redEnabled+
             " sendRED="+redEnabled+"; packet format fixed by validated SETUP negotiation")
+        if(sapCrypto!=null)log("Audio crypto category="+category+" mode="+sapCrypto.modeName+"(MFi/SAP)"+
+            " type="+streamType+" payloadOnly=true tagBytes=0 nonceTail=0 wirePT="+
+            MediaAudioPackets.wirePayloadType(streamType,wirePtOverride)+
+            "; frame cipher follows A-44 type/G dispatch")
     }
     override suspend fun send(category:Int,pcm:ByteArray,format:PcmFormat){
         require(category==this.category&&format==pcmFormat&&format.accepts(pcm.size))
@@ -70,11 +80,19 @@ class CarPlayMediaAudio(private val socket:DatagramSocket,private val peer:InetA
                 if(!canSend()){pending=byteArrayOf();clearHistory();return}
                 val timestamp=rtpClock.timestamp(pacingFrames)
                 try{
-                    check(nonce<Long.MAX_VALUE){"Audio nonce exhausted; new stream needed"}
                     val data=MediaAudioPackets.networkPcm(pending.copyOfRange(offset,offset+packetBytes))
-                    val wire=if(redEnabled)
-                        MediaAudioPackets.redPacket(data,history,historyTimestamp,key,sequence,timestamp,nonce++,streamType)
-                    else MediaAudioPackets.packet(data,key,sequence,timestamp,nonce++,streamType)
+                    // SAP：帧密码由 SapAudioCrypto 决定（A-44 分派）。raw 100/101 在 G=0 下
+                    // 没有密码器，所以这里的 PLAINTEXT 是**规范行为**而不是诊断降级；
+                    // 12 字节头照旧，正文就是 BE PCM。RED 在 SAP 下不谈判（offeredRed=false）。
+                    val wire=if(sapCrypto!=null){
+                        check(!redEnabled){"SAP audio has no RED record implementation"}
+                        MediaAudioPackets.sapPacket(data,sapCrypto,sequence,timestamp,streamType,wirePtOverride)
+                    }else{
+                        check(nonce<Long.MAX_VALUE){"Audio nonce exhausted; new stream needed"}
+                        if(redEnabled)
+                            MediaAudioPackets.redPacket(data,history,historyTimestamp,key,sequence,timestamp,nonce++,streamType)
+                        else MediaAudioPackets.packet(data,key,sequence,timestamp,nonce++,streamType)
+                    }
                     val packetSequence=sequence
                     socket.send(DatagramPacket(wire,wire.size,peer,port))
                     // Commit immediately after the local UDP write succeeds, before diagnostics.
@@ -85,7 +103,10 @@ class CarPlayMediaAudio(private val socket:DatagramSocket,private val peer:InetA
                     retransmit?.record(packetSequence,wire)
                     if(packets==1L)log("Audio first RTP category="+category+" type="+streamType+
                         " pt="+(wire[1].toInt() and 127)+" seq="+packetSequence+" timestamp="+(timestamp and 0xffffffffL)+
-                        " frames="+framesPerPacket+" bytes="+wire.size+" aad=4-12 remotePort="+port)
+                        " frames="+framesPerPacket+" bytes="+wire.size+
+                        (if(sapCrypto!=null)" crypto="+sapCrypto.modeName+" tagBytes=0 nonceTail=0"
+                         else " aad=4-12 remotePort="+port)+
+                        " head="+wire.take(24).joinToString(""){b->"%02x".format(b.toInt() and 0xff)})
                 }catch(t:Throwable){
                     // Do not reuse an uncertain send, or replay pending PCM if a diagnostic
                     // throws after the packet has already been committed.

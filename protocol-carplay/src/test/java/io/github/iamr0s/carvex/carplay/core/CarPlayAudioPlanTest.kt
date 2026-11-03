@@ -17,7 +17,7 @@ class CarPlayAudioPlanTest {
         assertNull(CarPlayAudioPlan.selectPlayback(entries,2,source,
             excludedRoutes=setOf(CarPlayAudioPlan.alert,CarPlayAudioPlan.alternate)){false})
         assertEquals(CarPlayAudioPlan.media,CarPlayAudioPlan.selectPlayback(entries,1,source,
-            excludedRoutes=setOf(CarPlayAudioPlan.alert)){true}!!.route)
+            excludedRoutes=setOf(CarPlayAudioPlan.alert),preferPcmMedia=false){true}!!.route)
     }
     @Test fun runtimeWireGateRetainsTheExistingCompressedWritersAndBoundsPcm(){
         for(format in CarPlayAudioPlan.formats){
@@ -125,7 +125,7 @@ class CarPlayAudioPlanTest {
             Triple(2,100,CarPlayAudioPlan.Codec.OPUS),Triple(3,100,CarPlayAudioPlan.Codec.OPUS))
         val source=PcmFormat(48000,2)
         val selected=expected.map{(category,type,codec)->
-            val selection=CarPlayAudioPlan.selectPlayback(entries,category,source){true}!!
+            val selection=CarPlayAudioPlan.selectPlayback(entries,category,source,preferPcmMedia=false){true}!!
             assertEquals(type,selection.route.type)
             assertEquals(codec,selection.format.codec)
             selection.route to selection.format
@@ -165,15 +165,37 @@ class CarPlayAudioPlanTest {
     @Test fun playbackSelectionFallsBackToAnotherRouteWhenNoLocalEncoderMatchesType102(){
         val entries=listOf(entry(102,"media",0x800000L),entry(100,"media",0x8000L))
         val probed=mutableListOf<CarPlayAudioPlan.Format>()
-        val selected=CarPlayAudioPlan.selectPlayback(entries,1,PcmFormat(48000,2)){
+        val selected=CarPlayAudioPlan.selectPlayback(entries,1,PcmFormat(48000,2),preferPcmMedia=false){
             probed+=it;false
         }!!
         assertEquals(listOf(CarPlayAudioPlan.Codec.AAC_LC),probed.map{it.codec})
         assertEquals(CarPlayAudioPlan.mediaLowLatency,selected.route)
         assertEquals(CarPlayAudioPlan.Codec.PCM16,selected.format.codec)
         assertEquals(0x8000L,selected.format.bit)
-        assertNull(CarPlayAudioPlan.selectPlayback(entries.take(1),1,PcmFormat(48000,2)){false})
+        assertNull(CarPlayAudioPlan.selectPlayback(entries.take(1),1,PcmFormat(48000,2),preferPcmMedia=false){false})
         assertNull(CarPlayAudioPlan.selectPlayback(emptyList(),1,PcmFormat(48000,2)){true})
+    }
+
+    /** T2 的真机自变量：`preferPcmMedia` 必须只在车机真的广告了可发的 PCM16 时改变选择，
+     *  并且不能污染 category 2/3。没有这条覆盖，"开了开关但车机没广告 PCM" 会被静默当作
+     *  "PCM 试过了也没声" —— 那就把一次格式不匹配误读成协议结论。 */
+    @Test fun pcmMediaPreferenceOnlyAppliesToMainAudioWithAdvertisedPcm(){
+        val withPcm=listOf(entry(100,"media",0x8000L),entry(102,"media",0x800000L),
+            entry(100,"alert",0x40008000L),entry(101,"default",0x40008000L))
+        val media=CarPlayAudioPlan.selectPlayback(withPcm,1,PcmFormat(48000,2),preferPcmMedia=true){true}!!
+        assertEquals(CarPlayAudioPlan.mediaLowLatency,media.route)
+        assertEquals(0x8000L,media.format.bit)
+        assertEquals(48000,media.format.rate)
+        assertEquals(2,media.format.channels)
+        // 同一个开关开着，告警仍然走 `100/alert` 的压缩编码，不被 PCM 抢占。
+        val alert=CarPlayAudioPlan.selectPlayback(withPcm,2,PcmFormat(48000,2),preferPcmMedia=true){true}!!
+        assertEquals(CarPlayAudioPlan.alert,alert.route)
+        assertNotEquals(CarPlayAudioPlan.Codec.PCM16,alert.format.codec)
+        // 车机没在 100/media 上广告 PCM16 时，开关必须无声地退回原来的压缩选择。
+        val noPcm=listOf(entry(102,"media",0x800000L),entry(100,"media",0x2000000L))
+        val fallback=CarPlayAudioPlan.selectPlayback(noPcm,1,PcmFormat(48000,2),preferPcmMedia=true){true}!!
+        assertEquals(CarPlayAudioPlan.media,fallback.route)
+        assertEquals(CarPlayAudioPlan.Codec.AAC_LC,fallback.format.codec)
     }
 
     @Test fun bootstrapPrimesSpeechThenAlertThenMedia(){
@@ -181,10 +203,16 @@ class CarPlayAudioPlanTest {
             entry(101,"default",0x40008000L),
             AudioCapabilities.Entry(100,"speechRecognition",0x20000040L,0x20000040L))
         val source=PcmFormat(48000,2)
-        assertEquals(listOf(100,100,102),CarPlayAudioPlan.bootstrapPlayback(entries,source){true}.map{it.route.type})
-        val pcm=CarPlayAudioPlan.bootstrapPlayback(entries,source){false}
+        assertEquals(listOf(100,100,102),
+            CarPlayAudioPlan.bootstrapPlayback(entries,source,preferPcmMedia=false){true}.map{it.route.type})
+        val pcm=CarPlayAudioPlan.bootstrapPlayback(entries,source,preferPcmMedia=false){false}
         assertEquals(listOf(100,100,100),pcm.map{it.route.type})
         assertEquals(listOf(3,2,1),pcm.map{it.route.category})
+        // T2 打开后：三条流仍然各自独立（type 相同、purpose 不同），主音频换成裸 PCM16。
+        val pcmMedia=CarPlayAudioPlan.bootstrapPlayback(entries,source,preferPcmMedia=true){true}
+        assertEquals(listOf(100,100,100),pcmMedia.map{it.route.type})
+        assertEquals(listOf("speechRecognition","alert","media"),pcmMedia.map{it.route.purpose})
+        assertEquals(CarPlayAudioPlan.Codec.PCM16,pcmMedia.last().format.codec)
     }
 
     @Test fun microphoneRetainsPcmWhenCompressedDecoderIsUnavailable(){
@@ -198,7 +226,7 @@ class CarPlayAudioPlanTest {
 
     @Test fun playbackSelectionUsesLocalCodecIntersectionBeforeMovingToNextRoute(){
         val entries=listOf(entry(102,"media",0x2000000L or 0x800000L),entry(100,"media",0x8000L))
-        val selected=CarPlayAudioPlan.selectPlayback(entries,1,PcmFormat(48000,2)){
+        val selected=CarPlayAudioPlan.selectPlayback(entries,1,PcmFormat(48000,2),preferPcmMedia=false){
             it.codec==CarPlayAudioPlan.Codec.AAC_LC
         }!!
         assertEquals(CarPlayAudioPlan.media,selected.route)

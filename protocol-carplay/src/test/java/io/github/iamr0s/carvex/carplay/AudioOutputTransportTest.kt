@@ -273,4 +273,29 @@ class AudioOutputTransportTest {
             assertEquals(2L,plain.packetsSent);assertEquals(1L,red.packetsSent)
         }finally{plain.close();red.close()}
     }
+
+    /** T2 线上格式：raw 100/101 在 A-44 的 G=0 分派表里**不建密码器**，所以 SAP 下 PCM 的
+     *  线上就是 `0x80` + PT + (seq BE16 / timestamp BE32 / 0 BE32) + BE PCM。
+     *  没有 16 字节 tag、没有 8 字节 nonce 尾 —— 这两样是 ChaCha 路线的，少一个字节车机都会
+     *  按错长度切帧。这条测试把长度关系钉死，避免以后有人"顺手"把非对称封包接进来。 */
+    @Test fun sapPlainPcmCarriesHeaderAndNetworkByteOrderPcmOnly():Unit=runBlocking {
+        val socket=RecordingSocket()
+        val pcm=PcmFormat(48000,2)
+        val bytes=240*2*2
+        val audio=CarPlayMediaAudio(socket,peer,12345,pcm,1,100,ByteArray(0),null,{},{},{},
+            sapCrypto=io.github.iamr0s.carvex.carplay.core.SapAudioCrypto.plain())
+        try{
+            // 0x1234 的低字节在前 = 源侧小端；线上必须是 0x12,0x34。
+            val source=ByteArray(bytes){if(it%2==0)0x34 else 0x12}
+            audio.send(1,source,pcm)
+            val packet=socket.packets.single()
+            assertEquals("12 bytes of header plus the PCM body, nothing else",12+bytes,packet.size)
+            assertEquals(0x80,packet[0].toInt() and 0xff)
+            assertEquals(100,packet[1].toInt() and 127)
+            // 正文整体等于 networkPcm 的字节序翻转结果，逐字节可比。
+            assertArrayEquals(MediaAudioPackets.networkPcm(source),packet.copyOfRange(12,packet.size))
+            assertEquals(0x12,packet[12].toInt() and 0xff)
+            assertEquals(0x34,packet[13].toInt() and 0xff)
+        }finally{audio.close()}
+    }
 }
