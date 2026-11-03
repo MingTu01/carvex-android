@@ -180,12 +180,13 @@ class CarPlayAudioPlanTest {
      *  `#4 100/media 8000`、`#8 102/media 800000`、`#2 100/alert 2008000`、
      *  `#6 100/speechRecognition 8000040`。
      *
-     *  PCM 优先必须满足两件事：(1) 三条流各走自己那条路由、不被压缩编码抢回去 ——
-     *  否则 category 2/3 又会落到本端建不起来的 ELD 编码器上；(2) 车机没广告 PCM 时
-     *  **无声退回**压缩选择 —— 否则"开了开关但格式不匹配"会被误读成"PCM 试过也没声"。 */
-    @Test fun pcmPreferenceCoversEveryCategoryUsingTheHeadUnitCapabilityShape(){
+     *  PCM 优先必须满足三件事：(1) 主音频落到 `100/media` 的裸 PCM16 —— 这是实车出声的配置；
+     *  (2) **不碰 category 3** —— 车机在 `type 100` 上只有一个 PCM 上下文，20032 就是让
+     *  speechRecognition 先用掉 24k/1、把 `100/media` 的 48k/2 顶成 StatusException 而丢了主音频；
+     *  (3) 没广告 PCM 时无声退回压缩选择。 */
+    @Test fun pcmPreferenceCoversOnlyTheStreamsThatCanCoexistOnType100(){
         val real=listOf(entry(100,"media",0x8000L),entry(102,"media",0x800000L),
-            entry(100,"alert",0x2008000L),
+            entry(100,"alert",0x2008000L),entry(101,"default",0x40008000L),
             AudioCapabilities.Entry(100,"speechRecognition",0x8000040L,0x8000040L))
         val source=PcmFormat(48000,2)
 
@@ -195,25 +196,22 @@ class CarPlayAudioPlanTest {
         assertEquals(48000,media.format.rate)
         assertEquals(2,media.format.channels)
 
-        // 告警：`100/alert` 上同时广告了 PCM 48k/2 与 ELD 48k/2，必须取 PCM。
-        val alert=CarPlayAudioPlan.selectPlayback(real,2,source,preferPcm=true){true}!!
-        assertEquals(CarPlayAudioPlan.alert,alert.route)
-        assertEquals(CarPlayAudioPlan.Codec.PCM16,alert.format.codec)
-        assertEquals(0x8000L,alert.format.bit)
-
-        // 语音：只广告了 PCM 24k/1 与 ELD 24k/1，取 PCM，且必须是单声道 24k。
+        // category 3 绝不能被 PCM 优先抓住：它一占住 type 100 的 PCM 上下文，主音频就没了。
         val speech=CarPlayAudioPlan.selectPlayback(real,3,source,preferPcm=true){true}!!
         assertEquals(CarPlayAudioPlan.assistant,speech.route)
-        assertEquals(CarPlayAudioPlan.Codec.PCM16,speech.format.codec)
-        assertEquals(0x40L,speech.format.bit)
-        assertEquals(24000,speech.format.rate)
-        assertEquals(1,speech.format.channels)
+        assertEquals(CarPlayAudioPlan.Codec.AAC_ELD,speech.format.codec)
+        assertEquals(0x8000000L,speech.format.bit)
 
-        // 关掉开关时退回的正是那两条在本端会崩的 ELD 路径，这条断言记录"我们绕开了什么"。
-        assertEquals(0x2000000L,
-            CarPlayAudioPlan.selectPlayback(real,2,source,preferPcm=false){true}!!.format.bit)
-        assertEquals(0x8000000L,
-            CarPlayAudioPlan.selectPlayback(real,3,source,preferPcm=false){true}!!.format.bit)
+        // 告警音默认不走 PCM：它自己那条 `100/alert` 的 PCM 会被车机 400 拒绝。
+        val alertDefault=CarPlayAudioPlan.selectPlayback(real,2,source,preferPcm=true,preferPcmAlert=false){true}!!
+        assertEquals(CarPlayAudioPlan.alert,alertDefault.route)
+        assertEquals(CarPlayAudioPlan.Codec.AAC_ELD,alertDefault.format.codec)
+
+        // 打开 pcmAlert 后改走 `101/default`：真机 20032 上这条是 accepted，而且不抢 type 100。
+        val alertPcm=CarPlayAudioPlan.selectPlayback(real,2,source,preferPcm=true,preferPcmAlert=true){true}!!
+        assertEquals(CarPlayAudioPlan.alternate,alertPcm.route)
+        assertEquals(CarPlayAudioPlan.Codec.PCM16,alertPcm.format.codec)
+        assertEquals(0x8000L,alertPcm.format.bit)
 
         // 没有任何广告 PCM 时不许凭空造一个。
         val noPcm=listOf(entry(102,"media",0x800000L),entry(100,"media",0x2000000L))

@@ -26,15 +26,29 @@ class SpeechAudioSelectionTest {
             assertEquals(opus,selected.format.bit)
         }
     }
-    /** 默认（PCM 优先）打开后，广告了 PCM 就必须取 PCM —— 真车 20030 上压缩编码器
-     *  对 alert/speechRecognition 都建不起来，取压缩等于整条流不可用。 */
-    @Test fun pcmPreferenceWinsOverAnAvailableEncoderWhenPcmIsAdvertised() {
-        for(category in listOf(2,3)){
-            val selected=CarPlayAudioPlan.selectPlayback(entries(opus or pcm),category,source,
-                requireDuplex=category==3,preferPcm=true){true}!!
-            assertEquals(CarPlayAudioPlan.Codec.PCM16,selected.format.codec)
-            assertEquals(pcm,selected.format.bit)
-        }
+    /** PCM 优先只覆盖主音频与（显式打开时的）告警音。
+     *
+     *  category 3 必须**始终**走压缩：车机在 `type 100` 上只有一个 PCM 上下文，
+     *  让 speechRecognition 先用掉 24k/1 会把 `100/media` 的 48k/2 顶成 StatusException
+     *  —— 真机 20032 就是这样丢掉主音频的。这条断言是那个回退的回归护栏。 */
+    @Test fun pcmPreferenceNeverTakesTheSpeechStreamAwayFromItsEncoder() {
+        val selected=CarPlayAudioPlan.selectPlayback(entries(opus or pcm),3,source,
+            requireDuplex=true,preferPcm=true,preferPcmAlert=true){true}!!
+        assertEquals(CarPlayAudioPlan.Codec.OPUS,selected.format.codec)
+        assertEquals(opus,selected.format.bit)
+        // 告警音只有显式打开 pcmAlert 时才走 PCM，而且必须落在 101/default 上 ——
+        // 它自己的 100/alert 在真机 20032 上被 400 拒绝。
+        val withAlternate=entries(opus or pcm)+AudioCapabilities.Entry(101,"default",null,opus or pcm)
+        val alert=CarPlayAudioPlan.selectPlayback(withAlternate,2,source,
+            preferPcm=true,preferPcmAlert=true){true}!!
+        assertEquals(CarPlayAudioPlan.alternate,alert.route)
+        assertEquals(CarPlayAudioPlan.Codec.PCM16,alert.format.codec)
+        assertEquals(pcm,alert.format.bit)
+        // 默认不开：仍然取压缩，避免踩那条 400。
+        val alertOff=CarPlayAudioPlan.selectPlayback(withAlternate,2,source,
+            preferPcm=true,preferPcmAlert=false){true}!!
+        assertEquals(CarPlayAudioPlan.alert,alertOff.route)
+        assertEquals(CarPlayAudioPlan.Codec.OPUS,alertOff.format.codec)
     }
     @Test fun pcmOnlyPeerStillHasNavigationAndDuplexAssistant() {
         for(category in listOf(2,3)){

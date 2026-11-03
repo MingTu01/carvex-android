@@ -29,20 +29,27 @@ object AudioDebugConfig {
     /** 未显式配置音量时使用的默认值（dB）。iPhone 常用 0 dB 表示原始增益。 */
     const val DEFAULT_VOLUME_DB: Double = 0.0
 
-    /** PCM 优先：三条音频流（media/alert/speechRecognition）都走车机广告的裸 PCM16。
+    /** PCM 优先（**只对 category 1 / 主音频**）：走车机广告的 `100/media` 裸 PCM16。
      *
      *  **已在实车证实**（build 20030）：`100/media` + `audioFormat=0x8000` + 无帧密码，
      *  车机出声。此前 `type=102/media` + AAC-LC + CBCFrame 一直是"包在发、日志全绿、全程静音"。
      *
-     *  为什么 category 2/3 也一起走：车机 `/info` 对三条流都广告了 PCM，
-     *  而两套压缩编码在本端建不起来（20030 真机：category 3 报
-     *  `AAC configuration differs from announced audioFormat: objectType=39 rate=24000 ch=1
-     *  frames=512`，category 2 报 `ELD resilience/SBR configuration unsupported`），
-     *  于是提示音与语音输出完全不工作。PCM 是唯一有实证的选择。
+     *  **不要再往 category 2/3 扩**。20032 试过，结果是主音频被顶掉：
+     *  车机在 `type 100` 上只有一个 PCM 上下文，category 3 先用掉 24k/1 之后，
+     *  `100/alert` 与 `100/media` 的 48k/2 SETUP 全部 400。
      *
-     *  代价是带宽（48k/2 → 192 kB/s，AAC 的 8 倍），且放弃压缩编码的容错。
-     *  这两点应该在压缩编码修好之后重新评估，而不是把 PCM 当成最终形态。
+     *  代价是带宽（48k/2 → 192 kB/s，AAC 的 8 倍）。等压缩编码修好之后应重新评估，
+     *  不要把 PCM 当成最终形态。
      *
      *  ADB 开关名沿用 `pcmMedia`（已在真机用过，不改以免破坏记录里的命令）。 */
     @Volatile var pcmMedia: Boolean = true
+
+    /** 告警音（category 2）改用 `101/default` 的裸 PCM16。
+     *
+     *  为什么是 101 而不是它自己的 `100/alert`：真机 20032 上 `100/alert` + PCM 48k/2 被
+     *  车机以 **400 拒绝**，而同一次尝试里 `101/default` + 同样的 PCM 48k/2 被接受。
+     *  101 是独立的 type，不抢 `type 100` 那个唯一的 PCM 上下文，所以不会影响主音频。
+     *
+     *  默认关：合成器行为没有实车听感证据，只在明确要试提示音时打开。 */
+    @Volatile var pcmAlert: Boolean = false
 }

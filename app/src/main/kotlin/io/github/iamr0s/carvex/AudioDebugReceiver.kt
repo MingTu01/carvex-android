@@ -76,12 +76,20 @@ class AudioDebugReceiver : BroadcastReceiver() {
             sb.append(" volume=$v")
             changed = true
         }
-        // pcmMedia: 主音频改走 100/media + 裸 PCM16（T2 实验）
+        // pcmMedia: 主音频走 100/media 裸 PCM16（默认开，实车已验证）
         if (intent.hasExtra("pcmMedia")) {
             val v = intent.getBooleanExtra("pcmMedia", true)
             AudioDebugConfig.pcmMedia = v
             editor.putBoolean("audioPcmMedia", v)
             sb.append(" pcmMedia=$v")
+            changed = true
+        }
+        // pcmAlert: 告警音走 101/default 裸 PCM16（默认关；100/alert 的 PCM 会被车机 400 拒绝）
+        if (intent.hasExtra("pcmAlert")) {
+            val v = intent.getBooleanExtra("pcmAlert", false)
+            AudioDebugConfig.pcmAlert = v
+            editor.putBoolean("audioPcmAlert", v)
+            sb.append(" pcmAlert=$v")
             changed = true
         }
         // audioVolumeDb: 主音频增益（dB）。NaN 表示不宣告，此时走 AudioDebugConfig 的 0 dB 默认值。
