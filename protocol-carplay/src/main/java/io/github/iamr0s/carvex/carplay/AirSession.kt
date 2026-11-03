@@ -743,9 +743,26 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             var loggedAt=System.nanoTime()
             var readLoggedAt:Long?=null
             var signature=""
+            val watchedFrom=System.nanoTime()
             while(isActive){
                 delay(1000)
                 val now=System.nanoTime()
+                // 链路存活看门狗。`/feedback` 每 ~2 s 一次，车机每次都回 200，所以
+                // "20 秒一条控制面消息都没收到"只可能意味着对端已经不在了
+                // （Wi-Fi 掉出范围、车机断电）。而阻塞式 read() 自己不会报错，没有这条看门狗，
+                // 会话会永远停在 STREAMING：界面显示已连接、实际一条命令都发不出去，
+                // 用户看到的就是"走远了自动断开，回来再也连不上，只能重启车机"。
+                // 判定后按普通 IO 失败处理，重试循环会重新走蓝牙 + Wi-Fi + iAP 握手。
+                // 60 s 起步宽限：启动阶段的 SETUP/RECORD 往返不参与这个计时。
+                client?.let{c->
+                    val lastRx=c.lastMessageNanos.takeIf{it!=0L}?:watchedFrom
+                    val silentMs=(now-lastRx)/1_000_000
+                    if(now-watchedFrom>60_000_000_000L&&now-lastRx>20_000_000_000L){
+                        channelFailure("control-liveness",java.net.SocketTimeoutException(
+                            "no control message for "+silentMs+"ms while /feedback is posted every ~2 s; treating the link as dead"))
+                        break
+                    }
+                }
                 videoDiagnostics.poll()
                 if(readLoggedAt?.let{now-it>=5_000_000_000L}!=false){
                     readLoggedAt=now

@@ -76,7 +76,7 @@ class SpeechAudioSelectionTest {
         val capabilities=entries(opus or pcm)+AudioCapabilities.Entry(102,"media",null,0x800000L)
         for(encoderAvailable in listOf(false,true)){
             val bootstrap=CarPlayAudioPlan.bootstrapPlayback(capabilities,source){encoderAvailable}
-            val runtime=listOf(3,2,1).mapNotNull{category->
+            val runtime=listOf(2,1).mapNotNull{category->
                 CarPlayAudioPlan.selectPlayback(capabilities,category,source,requireDuplex=category==3){encoderAvailable}}
             assertEquals(runtime,bootstrap)
         }

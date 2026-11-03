@@ -44,14 +44,31 @@ object AudioDebugConfig {
      *  ADB 开关名沿用 `pcmMedia`（已在真机用过，不改以免破坏记录里的命令）。 */
     @Volatile var pcmMedia: Boolean = true
 
-    /** 告警音（category 2）改用 `101/default` 的裸 PCM16。
+    /** 导航语音（category 2）改用 `101/default` 的裸 PCM16。**默认开，这是导航能出声的唯一路径。**
      *
-     *  为什么是 101 而不是它自己的 `100/alert`：真机 20032 上 `100/alert` + PCM 48k/2 被
-     *  车机以 **400 拒绝**，而同一次尝试里 `101/default` + 同样的 PCM 48k/2 被接受。
-     *  101 是独立的 type，不抢 `type 100` 那个唯一的 PCM 上下文，所以不会影响主音频。
+     *  为什么必须开（2026-11-03 真车日志，会话 `3834a0f2` / `8669f557`）：
      *
-     *  默认关：合成器行为没有实车听感证据，只在明确要试提示音时打开。 */
-    @Volatile var pcmAlert: Boolean = false
+     *  ```
+     *  12:17:03.921  Audio SETUP accepted category=2 type=100 dataPort=50122
+     *  12:17:03.973  Compressed audio category=2 failed:
+     *                IllegalArgumentException ELD resilience/SBR configuration unsupported
+     *  12:19:38.335  Audio route refused category=2 type=100/alert status=400
+     *  12:19:38.339  category=2 unavailable: Audio stream type=101/default already has a session
+     *  ```
+     *
+     *  第一段说明：`100/alert` 这条**压缩**路由车机是接受的，是我们的 AAC-ELD 编码器
+     *  在 `AacConfiguration` 里被 SBR/resilience 位挡住，把刚建好的流自己弄死了。
+     *  第二段说明：导航真开始时 `type 100` 已被主音频 PCM 占住，车机对 `100/alert` 回 400；
+     *  可兜底的 `101/default` 又被 category 3 的预热流占着（那条流从头到尾发 0 个包）。
+     *
+     *  改成 PCM 之后 cat2 完全不需要编码器：`101/default` 车机广告的是
+     *  `outputMask=2008000`（lpcm 48000/2 | ELD 48000/2），直接发 48k/2 裸 PCM。
+     *  配合 `bootstrapPlayback` 不再预热 category 3，`101/default` 就空出来了。
+     *
+     *  关键：这条流在**会话建立阶段**就建好，导航开始时只是把 16k/1 的 PCM 灌进去
+     *  （`Pcm16Converter` 负责重采样与单声道上混），**绝不在会话中途 SETUP** ——
+     *  中途 SETUP 才是触屏失效的根因（见 [navAudio]）。 */
+    @Volatile var pcmAlert: Boolean = true
 
     /** 语音（category 3）改走 `101/default` 的裸 PCM16 48000/2，而不是 `100/speechRecognition`。
      *

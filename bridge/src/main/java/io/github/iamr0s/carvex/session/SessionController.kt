@@ -1055,12 +1055,19 @@ class SessionController(
                     //
                     // 返回 true = 这段音频由我们接管（丢弃），调用方不会转去手机本机播放。
                     if(category==2&&!prime&&!io.github.iamr0s.carvex.carplay.core.AudioDebugConfig.navAudio){
-                        // 导航语音的 PCM 回调很密（约 12 次/秒）。每次打一行会把 1MB 的
-                        // diagnostic.log 冲掉，真正有用的行反而看不到，所以这里限流到 5 秒一行。
+                        // 预热流还活着就**直接灌进去**：格式转换（16k/1 → 48k/2）与发送都在
+                        // HostAudioBridge 里，走的是会话建立阶段就建好的那条 `101/default`。
+                        // 返回 false 让调用方落到 `audio.receive(...)`，这才是不建新 SETUP 的路径。
+                        //
+                        // 这是导航出声的正解：车机的输入焦点只有在**中途 SETUP** 时才被它拿走，
+                        // 而这里一条新流都不建。
+                        if(audio.testFormat(2)!=null)return false
+                        // 没有活着的预热流时才丢弃。导航语音的 PCM 回调很密（约 12 次/秒），
+                        // 每次打一行会把 1MB 的 diagnostic.log 冲掉，所以限流到 5 秒一行。
                         val now=System.nanoTime()
                         val last=navAudioDropLogAt.get()
                         if(now-last>5_000_000_000L&&navAudioDropLogAt.compareAndSet(last,now))
-                            BridgeStore.log(id,"Audio category=2 mid-session demand dropped: a SETUP here costs the car's input focus (car-verified); prewarm only")
+                            BridgeStore.log(id,"Audio category=2 dropped: no live prewarmed lane; a mid-session SETUP here costs the car's input focus (car-verified)")
                         return true
                     }
                     val ticket=if(prime)audioDemand.prime(category,pcmFormat)

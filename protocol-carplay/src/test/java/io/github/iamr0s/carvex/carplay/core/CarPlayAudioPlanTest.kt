@@ -9,13 +9,20 @@ class CarPlayAudioPlanTest {
     @Test fun refusedPromptRouteFallsThroughOnlyToAnotherAdvertisedRoute(){
         val entries=listOf(entry(100,"alert",0x8000L),entry(101,"default",0x8000L),entry(102,"media",0x800000L))
         val source=PcmFormat(48000,2)
-        assertEquals(CarPlayAudioPlan.alert,CarPlayAudioPlan.selectPlayback(entries,2,source){false}!!.route)
+        // 这里钉住 `preferPcmAlert=false`：本用例考的是"路由被拒之后怎么走"，不是默认值。
+        assertEquals(CarPlayAudioPlan.alert,CarPlayAudioPlan.selectPlayback(entries,2,source,
+            preferPcmAlert=false){false}!!.route)
         assertEquals(CarPlayAudioPlan.alternate,CarPlayAudioPlan.selectPlayback(entries,2,source,
-            excludedRoutes=setOf(CarPlayAudioPlan.alert)){false}!!.route)
+            preferPcmAlert=false,excludedRoutes=setOf(CarPlayAudioPlan.alert)){false}!!.route)
         assertNull(CarPlayAudioPlan.selectPlayback(entries.take(1),2,source,
-            excludedRoutes=setOf(CarPlayAudioPlan.alert)){false})
+            preferPcmAlert=false,excludedRoutes=setOf(CarPlayAudioPlan.alert)){false})
         assertNull(CarPlayAudioPlan.selectPlayback(entries,2,source,
-            excludedRoutes=setOf(CarPlayAudioPlan.alert,CarPlayAudioPlan.alternate)){false})
+            preferPcmAlert=false,excludedRoutes=setOf(CarPlayAudioPlan.alert,CarPlayAudioPlan.alternate)){false})
+        // 默认（pcmAlert=true）：导航语音直接落在 101/default 的裸 PCM 上，不碰编码器 ——
+        // 车机在 100/alert 上只广告 ELD，而我们的 AAC-ELD 配置在国内 ROM 的编码器上过不去。
+        assertEquals(CarPlayAudioPlan.alternate,CarPlayAudioPlan.selectPlayback(entries,2,source){false}!!.route)
+        assertEquals(CarPlayAudioPlan.Codec.PCM16,
+            CarPlayAudioPlan.selectPlayback(entries,2,source){false}!!.format.codec)
         assertEquals(CarPlayAudioPlan.media,CarPlayAudioPlan.selectPlayback(entries,1,source,
             excludedRoutes=setOf(CarPlayAudioPlan.alert),preferPcm=false){true}!!.route)
     }
@@ -236,27 +243,29 @@ class CarPlayAudioPlanTest {
         assertEquals(CarPlayAudioPlan.Codec.AAC_LC,fallback.format.codec)
     }
 
-    @Test fun bootstrapPrimesSpeechThenAlertThenMedia(){
+    @Test fun bootstrapPrewarmsNavigationThenMedia(){
         val entries=listOf(entry(100,"media",0x8000L),entry(102,"media",0x800000L),entry(100,"alert",0x40008000L),
             entry(101,"default",0x40008000L),
             AudioCapabilities.Entry(100,"speechRecognition",0x20000040L,0x20000040L))
         val source=PcmFormat(48000,2)
-        assertEquals(listOf(100,100,102),
-            CarPlayAudioPlan.bootstrapPlayback(entries,source,preferPcm=false,preferSpeechAlt=false){true}.map{it.route.type})
-        val pcm=CarPlayAudioPlan.bootstrapPlayback(entries,source,preferPcm=false,preferSpeechAlt=false){false}
-        assertEquals(listOf(100,100,100),pcm.map{it.route.type})
-        assertEquals(listOf(3,2,1),pcm.map{it.route.category})
-        // T2 打开后：主音频换成裸 PCM16，语音仍在压缩路径上。
-        val pcmMedia=CarPlayAudioPlan.bootstrapPlayback(entries,source,preferPcm=true,preferSpeechAlt=false){true}
-        assertEquals(listOf(100,100,100),pcmMedia.map{it.route.type})
-        assertEquals(listOf("speechRecognition","alert","media"),pcmMedia.map{it.route.purpose})
-        assertEquals(CarPlayAudioPlan.Codec.PCM16,pcmMedia.last().format.codec)
-        // 默认（speechAltPcm=true）：语音挪到 type 101，主音频独占 type 100。
-        val spread=CarPlayAudioPlan.bootstrapPlayback(entries,source,preferPcm=true){true}
-        assertEquals(listOf(101,100,100),spread.map{it.route.type})
-        assertEquals(listOf("default","alert","media"),spread.map{it.route.purpose})
+        // 压缩路径：导航语音用它自己的 100/alert（OPUS），主音频 AAC-LC 落在 102/media。
+        val encoded=CarPlayAudioPlan.bootstrapPlayback(entries,source,
+            preferPcm=false,preferPcmAlert=false,preferSpeechAlt=false){true}
+        assertEquals(listOf(2,1),encoded.map{it.route.category})
+        assertEquals(listOf(100,102),encoded.map{it.route.type})
+        // 没有编码器时两条都退回 PCM。
+        val pcm=CarPlayAudioPlan.bootstrapPlayback(entries,source,
+            preferPcm=false,preferPcmAlert=false,preferSpeechAlt=false){false}
+        assertEquals(listOf(2,1),pcm.map{it.route.category})
+        assertEquals(listOf(100,100),pcm.map{it.route.type})
+        // 默认：导航语音落在 101/default 的裸 PCM —— 这个会话位以前被 category 3 的空流占着。
+        val spread=CarPlayAudioPlan.bootstrapPlayback(entries,source,preferPcm=true,preferPcmAlert=true){true}
+        assertEquals(listOf(2,1),spread.map{it.route.category})
+        assertEquals(listOf(101,100),spread.map{it.route.type})
+        assertEquals(listOf("default","media"),spread.map{it.route.purpose})
         assertEquals(CarPlayAudioPlan.Codec.PCM16,spread.first().format.codec)
-        assertEquals(listOf(3,2,1),spread.map{it.route.category})
+        // category 3 不再进预热计划：它整场发 0 个包，留着只会占住 101/default。
+        assertTrue(spread.none{it.route.category==3})
     }
 
     @Test fun microphoneRetainsPcmWhenCompressedDecoderIsUnavailable(){

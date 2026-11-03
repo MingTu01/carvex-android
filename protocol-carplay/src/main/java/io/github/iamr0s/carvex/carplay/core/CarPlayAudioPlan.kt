@@ -196,14 +196,31 @@ object CarPlayAudioPlan {
     }
     fun duplexSupported(entries:List<AudioCapabilities.Entry>,route:Route,format:Format):Boolean =
         route.type==100&&format in playbackFormats(entries,route)&&format in advertised(entries,route,capture=true)
-    /** Existing local prewarm policy (3,2,1), retained for this field/format repair.
-     * It is not a firmware guarantee of stream ordering or same-type concurrency. */
+    /** Existing local prewarm policy, retained for this field/format repair.
+     * It is not a firmware guarantee of stream ordering or same-type concurrency.
+     *
+     * **为什么顺序是 2→1、category 3 不再预热（2026-11-03 真车）**：
+     *
+     * 车机在 `101/default` 上只有一个会话位。category 3 原本预热在这里，可它整场会话
+     *  **发 0 个包**（心跳里恒为 `c3=0/-`，`Audio host callback category=3` 一次都没有；
+     *  小爱的声音实际是从 category 1 的媒体流里出来的）。于是 `101/default` 一直被一条
+     *  空流占着，导航真正要流时只能退回 `100/alert`，而 `type 100` 已被主音频占住 → 400：
+     *
+     *  ```
+     *  12:19:38.335  Audio route refused category=2 type=100/alert status=400
+     *  12:19:38.339  category=2 unavailable: Audio stream type=101/default already has a session
+     *  ```
+     *
+     *  不预热 category 3 之后 `101/default` 归 category 2（PCM 48k/2），导航语音就有一条
+     *  在会话建立阶段就已建好、中途只需要灌 PCM 的流 —— 不需要任何中途 SETUP。
+     *  category 3 若真的来要流，仍会走 [selectPlayback] 的 `speechAlternate`，
+     *  只是会因会话位被占而失败并留下日志，不再是"占着不用"。 */
     fun bootstrapPlayback(entries:List<AudioCapabilities.Entry>,source:PcmFormat,
         preferPcm:Boolean=AudioDebugConfig.pcmMedia,
         preferPcmAlert:Boolean=AudioDebugConfig.pcmAlert,
         preferSpeechAlt:Boolean=AudioDebugConfig.speechAltPcm,
         supportsEncoded:(Format)->Boolean):List<Selection> =
-        listOf(3,2,1).mapNotNull{category->
+        listOf(2,1).mapNotNull{category->
             selectPlayback(entries,category,source,requireDuplex=category==3,
                 preferPcm=preferPcm,preferPcmAlert=preferPcmAlert,preferSpeechAlt=preferSpeechAlt,
                 supportsEncoded=supportsEncoded)
