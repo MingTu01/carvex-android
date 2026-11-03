@@ -824,6 +824,11 @@ class SessionController(
                 true
             }}
             air.requestKeyFrame={video?.requestIdr()?:false}
+            // ADB 调试入口：让大哥不必反复进出导航，就能在同一个会话里多次试屏幕流重建。
+            // 关键帧必须跟着发，否则新数据口里没有可解码的起点（详见 AirSession.restartScreen）。
+            ScreenRestartHook.trigger={reason->
+                air.restartScreen(reason).also{ok->if(ok)runCatching{video?.requestIdr()}}
+            }
             val screen=phase(Stage.PAIR,90000){air.prepare{
                 if(!ended.get())BridgeStore.update(id){it.copy(stage=Stage.SETUP,detail=Stage.SETUP.title,error=null)}
             }}
@@ -1108,6 +1113,8 @@ class SessionController(
             withContext(NonCancellable){cleanup.awaitClosed()}
             if(termination===cleanup)termination=null
             if(host===h)host=null;if(audioBridge===audio)audioBridge=null;activeAir=null
+            // 钩子捕获的是这条会话的 AirSession，会话一释放就必须摘掉，否则 ADB 会打到已死的对象上。
+            ScreenRestartHook.trigger=null
             BridgeStore.log(id,"session resources released")
         }
     }
@@ -1244,7 +1251,8 @@ class SessionController(
         // attempt() 的 finally 块会先尝试清理；此处延迟兜底，确保资源一定被释放。
         val t=termination;termination=null
         if(t!=null){val th=Thread({runCatching{Thread.sleep(8000)};t.forceClose()},"session-forceClose");th.isDaemon=true;th.start()}
-        activeAir=null;audioBridge=null;scope.cancel();timer.shutdownNow()}
+        activeAir=null;audioBridge=null;scope.cancel();timer.shutdownNow()
+        ScreenRestartHook.trigger=null}
     /** 清理旧会话使后续 start() 能干净建立新连接：取消旧 attempt → 等 finally 清理 → 兜底 forceClose。
      *  不发 TEARDOWN 就断开会把车机 iAP 状态机留在半开态，重连时车机不回 SYN（NO_SYN）。 */
     override suspend fun recycle(){

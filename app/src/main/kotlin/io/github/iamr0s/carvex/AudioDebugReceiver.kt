@@ -6,6 +6,7 @@ import android.content.Intent
 import android.util.Log
 import io.github.iamr0s.carvex.sessioncore.BridgeStore
 import io.github.iamr0s.carvex.carplay.core.AudioDebugConfig
+import io.github.iamr0s.carvex.session.ScreenRestartHook
 
 /** ADB 运行时音频调试广播：免重编/重装切音频参数。
  *
@@ -23,6 +24,8 @@ import io.github.iamr0s.carvex.carplay.core.AudioDebugConfig
  *  am broadcast -a io.github.iamr0s.carvex.AUDIO_DEBUG --ez volume false
  *  # 组合：改完自动重连
  *  am broadcast -a io.github.iamr0s.carvex.AUDIO_DEBUG --ez audioPlaintext true --ez adts false --ez reconnect true
+ *  # 立刻重建一次屏幕流（不动配置、不重连；导航态触屏失效时用来连续试探）
+ *  am broadcast -a io.github.iamr0s.carvex.AUDIO_DEBUG --es restartScreen adb
  *  ```
  *
  *  所有参数都是可选的，只改传了的那些。`reconnect=true` 改完自动断开重连。
@@ -110,6 +113,31 @@ class AudioDebugReceiver : BroadcastReceiver() {
             changed = true
         }
         if (changed) editor.apply()
+
+        // restartScreen: 立刻重建一次屏幕流（TEARDOWN → SETUP → 重连数据口 → RECORD）。
+        //
+        // 不放进上面的 `changed` 分支：这一项不改任何持久配置，是一次性动作，也就不能跟
+        // `reconnect` 联动（重连会把会话换掉，重建就白做了）。
+        //
+        // 必须离开主线程：onReceive 在主线程，而重建里有两条阻塞 RTSP 往返，
+        // 真机若遇到对端不响应会直接把广播接收器拖到 ANR。
+        if (intent.hasExtra("restartScreen")) {
+            val reason = intent.getStringExtra("restartScreen")?.takeIf { it.isNotBlank() } ?: "adb"
+            val hook = ScreenRestartHook.trigger
+            if (hook == null) {
+                sb.append(" restartScreen=no-session")
+                Log.i(TAG, "restartScreen ignored: no live AirPlay session")
+            } else {
+                sb.append(" restartScreen=queued")
+                Thread({
+                    val ok = runCatching { hook(reason) }.getOrElse { t ->
+                        Log.i(TAG, "restartScreen threw: ${t.javaClass.simpleName} ${t.message ?: ""}")
+                        false
+                    }
+                    Log.i(TAG, "restartScreen reason=$reason -> $ok")
+                }, "adb-screen-restart").start()
+            }
+        }
 
         Log.i(TAG, sb.toString())
 
