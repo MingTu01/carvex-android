@@ -101,6 +101,28 @@ internal class AirPlaySetupSession(
         return !skipRecord
     }
 
+    /** 补发一条 RECORD（不受 [start] 的 started 门限制）。
+     *
+     *  存在的理由：本实现的音频流是 `prepare()` 之后才 SETUP 的，而 RECORD 在 `prepare()` 里
+     *  就已经发过。AirPlay/RAOP 把 RECORD 当作"开始消费"的闸门，晚建的流可能被登记却永不播放。
+     *  这条路径只做"已成立的会话再敲一次闸"，不改 URL、不改方法、不重试被显式拒绝的状态。 */
+    @Synchronized fun recordAgain(reason:String):Boolean {
+        current()
+        if(skipRecord){
+            log("RECORD(repeat) skipped by SETUP skipRecord reason="+reason)
+            return false
+        }
+        return try{
+            val reply=request("RECORD")
+            log("RECORD(repeat) accepted status="+reply.status+" reason="+reason)
+            true
+        }catch(t:Throwable){
+            // 补发失败不等于当前流已失效：保持原有流与画面，只把失败原因写进日志。
+            log("RECORD(repeat) failed reason="+reason+" "+t.javaClass.simpleName+" "+(t.message?:""))
+            false
+        }
+    }
+
     /** Unregister before sending, including prepare failures before an encoder
      * exists. Failed teardown must not resurrect the stream or be sent twice. */
     fun closeScreen() {

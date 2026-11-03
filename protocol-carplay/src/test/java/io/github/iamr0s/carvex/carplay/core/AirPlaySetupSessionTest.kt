@@ -137,6 +137,43 @@ class AirPlaySetupSessionTest {
         assertEquals(3,peer.requests().size)
     }
 
+    @Test fun recordAgainSendsASecondBodylessRecordAfterStartCommitted(){
+        val peer=Peer(Reply(),Reply(raw=byteArrayOf()),Reply(raw=byteArrayOf()))
+        peer.session.control(emptyMap())
+        assertTrue(peer.session.start())
+        assertTrue(peer.session.recordAgain("audio main ready"))
+        val records=peer.requests().filter{it.first.startsWith("RECORD")}
+        assertEquals(2,records.size)
+        assertTrue(records.all{it.body.isEmpty()})
+        assertEquals("RECORD $path RTSP/1.0",records[1].first)
+        assertFalse(records[1].headers.containsKey("x-apple-protocolversion"))
+    }
+
+    @Test fun recordAgainIsSuppressedBySkipRecordWithoutWritingOnTheWire(){
+        val peer=Peer(Reply(mapOf("skipRecord" to true)))
+        peer.session.control(emptyMap())
+        assertFalse(peer.session.recordAgain("audio main ready"))
+        assertEquals(1,peer.requests().size)
+    }
+
+    @Test fun recordAgainReportsRefusalInsteadOfThrowingAndStaysRetryable(){
+        val peer=Peer(Reply(),Reply(status=500),Reply(status=400),Reply(raw=byteArrayOf()))
+        peer.session.control(emptyMap())
+        assertFalse(peer.session.recordAgain("first"))
+        assertEquals(2,peer.requests().size)
+        assertFalse(peer.session.recordAgain("second"))
+        assertEquals(3,peer.requests().size)
+        assertTrue(peer.session.recordAgain("third"))
+        assertEquals(4,peer.requests().size)
+    }
+
+    @Test fun recordAgainOnClosedSessionThrowsBeforeWriting(){
+        val peer=Peer()
+        peer.session.close()
+        assertThrows(IllegalStateException::class.java){peer.session.recordAgain("closed")}
+        assertTrue(peer.requests().isEmpty())
+    }
+
     @Test fun skipAndInfoDoNotLeakToANewControlSession(){
         val first=Peer(Reply(mapOf("skipRecord" to true,"info" to emptyMap<String,Any?>())))
         first.session.control(emptyMap());assertFalse(first.session.start());first.session.close()

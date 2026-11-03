@@ -1265,6 +1265,15 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             audioTransports[category]=transport
             check(transport.ready&&!released.get()){"Audio transport closed during setup"}
             resources.own(combined)
+            // T1：音频流是在 `prepare()` 的 RECORD 之后才 SETUP 的（真机日志：RECORD cseq=10
+            // 比音频 SETUP cseq=36/39/42 早 6.4 秒，之后没再 RECORD）。这里在流真正 ready 之后
+            // 补敲一次闸。bootstrap 顺序是 3→2→1，所以 category=1 落在三条流的最后，
+            // 一次 RECORD 就能覆盖全部已建音频流，不必每条流各敲一枪。
+            if(category==1&&AudioDebugConfig.recordAfterAudio){
+                val repeated=setupLifecycle?.recordAgain("audio main ready type="+route.type+"/"+route.purpose)==true
+                log("Audio origin gate category=1 recordRepeated="+repeated+
+                    " codec="+candidate.codec+"; receiver playback acceptance still unmeasured")
+            }
             return combined
         }catch(t:Exception){
             microphone?.close()
@@ -1403,10 +1412,16 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
      *  只发一次、不重发。固定延迟的无条件重发属于盲试（AGENT.md §3）；音量是幂等的状态
      *  设置，丢了就丢了，不该用重发去掩盖，也不该让它占住 SETUP 热路径。 */
     private suspend fun announceVolume(control:RtspClient){
-        val db=options.audioVolumeDb
-        if(db.isNaN()||!volumeAnnounced.compareAndSet(false,true))return
+        if(!AudioDebugConfig.volume)return
+        val configured=options.audioVolumeDb
+        // iPhone 建流后一定会送一条音量。此前 options.audioVolumeDb 默认 NaN 时直接 return，
+        // 于是本实现从未宣告过音量（历史日志 `Audio volume announced` 零次）。接收端若把
+        // "未宣告" 当成 0 增益，载荷再正确也是静音，所以 NaN 时落到一个明确默认值。
+        val db=if(configured.isNaN())AudioDebugConfig.DEFAULT_VOLUME_DB else configured
+        if(!volumeAnnounced.compareAndSet(false,true))return
         runCatching{control.plist("SET_PARAMETER",connectionPath?:"/",mapOf("volume" to db))}
-            .onSuccess{log("Audio volume announced volume="+db+"dB accepted")}
+            .onSuccess{log("Audio volume announced volume="+db+"dB"+
+                (if(configured.isNaN())" (debug default; options.audioVolumeDb was NaN)" else "")+" accepted")}
             .onFailure{log("Audio volume announcement failed: "+it.javaClass.simpleName+" "+(it.message?:""))}
     }
     /** 拆屏幕流：文档 06 章 §2.5 要求"先注销本地流、再发 TEARDOWN"，失败不回滚注销。

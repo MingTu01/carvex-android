@@ -17,6 +17,10 @@ import io.github.iamr0s.carvex.carplay.core.AudioDebugConfig
  *  am broadcast -a io.github.iamr0s.carvex.AUDIO_DEBUG --ez adts true
  *  # 开关 RTCP SR 到 controlPort
  *  am broadcast -a io.github.iamr0s.carvex.AUDIO_DEBUG --ez rtcpSr true
+ *  # T1：音频 SETUP 后补发 RECORD（默认 true）
+ *  am broadcast -a io.github.iamr0s.carvex.AUDIO_DEBUG --ez recordAfterAudio false
+ *  # T3：补发 SET_PARAMETER volume（默认 true）
+ *  am broadcast -a io.github.iamr0s.carvex.AUDIO_DEBUG --ez volume false
  *  # 组合：改完自动重连
  *  am broadcast -a io.github.iamr0s.carvex.AUDIO_DEBUG --ez audioPlaintext true --ez adts false --ez reconnect true
  *  ```
@@ -54,6 +58,22 @@ class AudioDebugReceiver : BroadcastReceiver() {
             AudioDebugConfig.rtcpSr = v
             editor.putBoolean("audioRtcpSr", v)
             sb.append(" rtcpSr=$v")
+            changed = true
+        }
+        // recordAfterAudio: 音频 SETUP 后补发 RECORD（T1 开闸实验）
+        if (intent.hasExtra("recordAfterAudio")) {
+            val v = intent.getBooleanExtra("recordAfterAudio", true)
+            AudioDebugConfig.recordAfterAudio = v
+            editor.putBoolean("audioRecordAfterAudio", v)
+            sb.append(" recordAfterAudio=$v")
+            changed = true
+        }
+        // volume: 音频 SETUP 后补发 SET_PARAMETER volume（T3 音量闸实验）
+        if (intent.hasExtra("volume")) {
+            val v = intent.getBooleanExtra("volume", true)
+            AudioDebugConfig.volume = v
+            editor.putBoolean("audioVolumeAnnounce", v)
+            sb.append(" volume=$v")
             changed = true
         }
         if (changed) editor.apply()
