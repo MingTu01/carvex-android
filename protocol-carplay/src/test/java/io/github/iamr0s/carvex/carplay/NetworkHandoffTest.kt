@@ -205,6 +205,19 @@ class NetworkHandoffTest {
         catch(expected:SecurityException){assertEquals("key conflict",expected.message)}
     }}
 
+    @Test(timeout=5000) fun resolverDeadlineWithoutDeclaredRouteIsNotCancellation() {runBlocking {
+        // 真车 2026-11-03：车机自报 carPlayStartSession=false（没有 4301 可等），端点发现 15 秒
+        // 到点后如果这个异常以 CancellationException 的面目上抛，上层重试循环会读成"整条链被
+        // 放弃"——日志里既没有 failure 也没有 RETRY，之后再没重试过。它必须是普通超时。
+        val f=Fixture(false)
+        try{NetworkHandoffPipeline(f.handoff,join={Unit},publish={Unit},discover={_,_->
+            withTimeout(20){awaitCancellation()}
+        }).open(f.initial);fail("must fail")}
+        catch(expected:SocketTimeoutException){}
+        catch(unexpected:CancellationException){
+            fail("a resolver's own deadline must surface as SocketTimeoutException, not cancellation")}
+    }}
+
     @Test(timeout=5000) fun endpointDeadlineIsFailureButParentTimeoutRemainsCancellation() {runBlocking {
         val f=Fixture()
         try{NetworkHandoffPipeline(f.handoff,join={Unit},publish={Unit},discover={_,_->awaitCancellation()},

@@ -38,6 +38,8 @@ class ReceiverDiscovery(context:Context,private val path:NetworkPath,private val
     private val resolving=AtomicBoolean(false)
     private val pending=java.util.concurrent.ConcurrentLinkedQueue<NsdServiceInfo>()
     private val seen=java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    /** 主浏览（_airplay）累计看到的服务数。只用于诊断：它区分"车机没广播"和"广播了但我们筛掉了"。 */
+    private val found=java.util.concurrent.atomic.AtomicInteger()
     /** 出现过的服务类型 —— 世代判据的一部分，见 [ReceiverMetadata.services]。 */
     private val services=java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     /** 只用于"这个服务类型在不在"的辅助浏览：多一条线索就少一次无谓的配对尝试。 */
@@ -60,6 +62,7 @@ class ReceiverDiscovery(context:Context,private val path:NetworkPath,private val
         }
         override fun onServiceFound(info:NsdServiceInfo){
             if(closed.get())return
+            found.incrementAndGet()
             lost.remove(info.serviceName)
             info.serviceType?.let{services.add(it)}
             if(closed.get()||ready.isCompleted||!seen.add(info.serviceName))return
@@ -106,13 +109,25 @@ class ReceiverDiscovery(context:Context,private val path:NetworkPath,private val
                     val networkMatch=scopedNetwork||((Build.VERSION.SDK_INT<33||info.network==null)&&directAddressMatch)
                     // 保留 Bonjour SRV 自身的地址和端口，不要求与 0x4301 相同。
                     // 两种来源的端点成对交给 ControlEndpointCandidates 选择，不交叉拼接。
-                    if(!networkMatch||info.port !in 1..65535)return
+                    // 下面每个 return 都是一道会把候选丢掉的门；以前它们全是静默的，日志只剩
+                    // "浏览已开始、然后什么都没有"，无法区分车机没广播还是我们筛掉了。
+                    if(!networkMatch||info.port !in 1..65535){
+                        log("Bonjour candidate rejected name="+info.serviceName+" port="+info.port+
+                            " networkMatch="+networkMatch+" scoped="+scopedNetwork+" addressMatch="+directAddressMatch+
+                            " sdk="+Build.VERSION.SDK_INT)
+                        return
+                    }
                     require(info.attributes.values.sumOf{it.size}<=4096)
                     fun attribute(key:String)=info.attributes.entries.firstOrNull{it.key.equals(key,true)}?.value?.let{
                         require(it.size<=1024);it.toString(Charsets.UTF_8)}
-                    val observed=attribute("deviceid")?:return
+                    val observed=attribute("deviceid")?:run{
+                        log("Bonjour candidate rejected name="+info.serviceName+" reason=no deviceid txtKeys="+
+                            info.attributes.keys.joinToString(","));return}
                     val canonical=ReceiverIdentity.canonical(observed)
-                    if(canonical.isEmpty())return
+                    if(canonical.isEmpty()){
+                        log("Bonjour candidate rejected name="+info.serviceName+" reason=deviceid not canonical value="+observed)
+                        return
+                    }
                     // 0x4301 的 receiver 字段与 Bonjour 的 deviceid 在第三方接收端上**可以不同**
                     // 邀请另有十进制ID解析；它不证明这两个身份等价，完整固件身份融合仍待闭合。
                     if(expected!=null&&canonical!=expected)
@@ -120,7 +135,10 @@ class ReceiverDiscovery(context:Context,private val path:NetworkPath,private val
                     val scoped=hosts.mapNotNull{host->runCatching{
                         Bootstrap.address(path.properties,requireNotNull(host.hostAddress))}.getOrNull()}
                     val endpoint=scoped.firstOrNull{candidate->address?.let{candidate.address.contentEquals(it.address)}==true}
-                        ?:scoped.firstOrNull()?:return
+                        ?:scoped.firstOrNull()?:run{
+                            log("Bonjour candidate rejected name="+info.serviceName+" reason=no link-local address on this network hosts="+
+                                hosts.joinToString(","){it.hostAddress})
+                            return}
                     val advertisedKey=ReceiverIdentity.publicKey(attribute("pk"))
                     if(bootstrap.publicKey!=null&&advertisedKey!=null&&!java.security.MessageDigest.isEqual(bootstrap.publicKey,advertisedKey))
                         throw SecurityException()
@@ -162,7 +180,25 @@ class ReceiverDiscovery(context:Context,private val path:NetworkPath,private val
             registerBrowse("_airplay._tcp.",listener)
         }catch(t:Exception){ready.completeExceptionally(t)}
     }
-    suspend fun await():ReceiverMetadata=withTimeout(15000){ready.await()}
+    /** 15 秒的等待以前是纯黑箱：日志只有"浏览已开始"，之后要么拿到端点要么什么都没有。
+     *  真车 2026-11-03 连续三次都停在这里，只能靠猜。现在每 3 秒报一次内部状态：
+     *  found=0 且 services 也没有 _airplay ⇒ 车机这一轮根本没广播；
+     *  found>0 但 ready 未完成 ⇒ 是我们自己的筛选门把它丢了（上面那些 rejected 行会说明是哪道门）。 */
+    suspend fun await():ReceiverMetadata=withTimeout(DISCOVERY_WINDOW_MS){
+        val startedAt=System.nanoTime()
+        coroutineScope{
+            val heartbeat=launch{
+                while(isActive){
+                    delay(3_000)
+                    val elapsedMs=(System.nanoTime()-startedAt)/1_000_000L
+                    log("Bonjour still searching after "+elapsedMs+"ms: found="+found.get()+
+                        " seen="+seen.size+" pending="+pending.size+" resolving="+resolving.get()+
+                        " services=["+services.joinToString(",")+"] ready="+ready.isCompleted)
+                }
+            }
+            try{ready.await()}finally{heartbeat.cancel()}
+        }
+    }
     override fun close(){
         if(closed.compareAndSet(false,true)){
             pending.clear()
@@ -170,6 +206,10 @@ class ReceiverDiscovery(context:Context,private val path:NetworkPath,private val
         }
     }
     private companion object {
+        /** 端点发现窗口。真车成功样本里 _airplay 在浏览开始后 82ms 就出现，所以这个窗口
+         *  不是在"抢时间"，而是在"给车机自救"。它到期会以 SocketTimeoutException 形式失败，
+         *  由上层重试（不是取消整条链）。 */
+        const val DISCOVERY_WINDOW_MS=15_000L
         /** 只要出现就记录的服务类型；`_raop`/`_hap` 判 AirPlay 2，`_mfi-config` 是 Cinemo 系（GM）的实现线索。
          *  逐个浏览而不是只查一个：三个车机样本的服务集本来就不同（t3-carplay-spec §9.2）。 */
         val CLUE_SERVICES=listOf("_raop._tcp.","_hap._tcp.","_mfi-config._tcp.")

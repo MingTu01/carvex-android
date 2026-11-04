@@ -117,43 +117,56 @@ class SessionController(
             }
         }
         job=scope.launch {
+            /** 单次失败的统一处理。返回 true 表示还该重试，false 表示到此为止。
+             *  抽成函数是为了让"本地超时"和普通异常共用同一套判定——两者只在调用点不同。 */
+            suspend fun onFailure(id:String,t:Throwable):Boolean{
+                currentCoroutineContext().ensureActive()
+                BridgeStore.log(id,"failure: "+t.javaClass.simpleName+" "+(t.message?:""))
+                // 一旦确认缓存通道号坏过就一直刷新，不在后续失败里又退回旧缓存。
+                val noSyn=generateSequence<Throwable>(t){it.cause}.any{cause->
+                    cause is java.net.SocketTimeoutException&&cause.message?.contains("NO_SYN")==true
+                }
+                if(noSyn){markNoSyn();BridgeStore.log(id,"iAP NO_SYN: the car still holds the previous session; refreshing SDP and retrying until it releases")}
+                // 空消息的异常（例如候选为空时抛的那条 IllegalStateException）只靠类型无法定位，把栈截断打出来。
+                BridgeStore.log(id,"failure stack: "+t.stackTraceToString().take(2048))
+                BridgeStore.log(id,ProtocolTrace.event(BridgeStore.state.value.stage.name,"session","local","attempt","failed",t.javaClass.simpleName))
+                val accessoryRejected=t is java.io.IOException&&t.message?.startsWith("Accessory rejected ")==true
+                // Digest 挑战是"此端点走不通"的确定信号，重试不会变好（见 DigestRequired）。
+                val terminalTransport=t is TransportException&&t.category in setOf(
+                    TransportErrorCategory.PLATFORM_UNSUPPORTED,TransportErrorCategory.PERMISSION_DENIED,
+                    TransportErrorCategory.INTERFACE_BIND_FAILED,
+                    TransportErrorCategory.AUTH_FAILED,TransportErrorCategory.IDENTIFICATION_REJECTED)
+                val terminal=(t is IapStartupTimeout)||terminalTransport||t is PairUnsupported||t is SecurityException||t is IllegalArgumentException||t is IllegalStateException||
+                    accessoryRejected||t is DigestRequired
+                if(terminal){
+                    BridgeStore.update(id){it.copy(stage=Stage.FAILED,detail="在 "+it.stage.title+" 阶段失败",error=BridgeStore.redact(t.message?:t.javaClass.simpleName))}
+                    return false
+                }
+                BridgeStore.update(id){it.copy(stage=Stage.RETRY,
+                    // 别写"通常 X 分钟自动恢复"：真车 23:47 之后四十多分钟没松过，
+                    // 那次自愈是偶然。车机侧的会话只有车机自己放，说清楚比给希望有用。
+                    detail=if(noSyn)"车机仍占着上一次会话，需要车机侧释放（车机重启或熄火锁车）" else "资源已释放，等待恢复连接",
+                    error=BridgeStore.redact(t.message?:"连接中断"))}
+                delay(options.retryIntervalSeconds*1000L)
+                return true
+            }
             var attempt=0
             while(isActive){
                 if(attempt<Int.MAX_VALUE)attempt++
                 if(!isActive)break
                 val id=BridgeStore.begin(attempt)
                 try { attempt(id,options,fromHost,refreshSdpAfterNoSyn);break }
-                catch(t:kotlinx.coroutines.CancellationException){throw t}
-                catch(t:Exception){
+                catch(t:kotlinx.coroutines.CancellationException){
+                    // TimeoutCancellationException 也是 CancellationException：它表示"本地截止时间到了"，
+                    // 而不是父协程被取消。真取消会在 ensureActive() 处抛出并结束循环；上下文仍活跃，
+                    // 就说明这个超时是执行体自己抛出来的，必须按失败重试。
+                    // 2026-11-03 真车日志：端点发现 15 秒截止一路穿过 NetworkHandoffPipeline 到这里，
+                    // 被当成取消直接 rethrow，整条重试链静默死掉——没有 failure、没有 RETRY，只有资源
+                    // 释放，此后每个新会话都是 CarWith 重新拉起的外部实例，重试次数实际为 0。
                     currentCoroutineContext().ensureActive()
-                    BridgeStore.log(id,"failure: "+t.javaClass.simpleName+" "+(t.message?:""))
-                    // 一旦确认缓存通道号坏过就一直刷新，不在后续失败里又退回旧缓存。
-                    val noSyn=generateSequence<Throwable>(t){it.cause}.any{cause->
-                        cause is java.net.SocketTimeoutException&&cause.message?.contains("NO_SYN")==true
-                    }
-                    if(noSyn){markNoSyn();BridgeStore.log(id,"iAP NO_SYN: the car still holds the previous session; refreshing SDP and retrying until it releases")}
-                    // 空消息的异常（例如候选为空时抛的那条 IllegalStateException）只靠类型无法定位，把栈截断打出来。
-                    BridgeStore.log(id,"failure stack: "+t.stackTraceToString().take(2048))
-                    BridgeStore.log(id,ProtocolTrace.event(BridgeStore.state.value.stage.name,"session","local","attempt","failed",t.javaClass.simpleName))
-                    val accessoryRejected=t is java.io.IOException&&t.message?.startsWith("Accessory rejected ")==true
-                    // Digest 挑战是"此端点走不通"的确定信号，重试不会变好（见 DigestRequired）。
-                    val terminalTransport=t is TransportException&&t.category in setOf(
-                        TransportErrorCategory.PLATFORM_UNSUPPORTED,TransportErrorCategory.PERMISSION_DENIED,
-                        TransportErrorCategory.INTERFACE_BIND_FAILED,
-                        TransportErrorCategory.AUTH_FAILED,TransportErrorCategory.IDENTIFICATION_REJECTED)
-                    val terminal=(t is IapStartupTimeout)||terminalTransport||t is PairUnsupported||t is SecurityException||t is IllegalArgumentException||t is IllegalStateException||
-                        accessoryRejected||t is DigestRequired
-                    if(terminal){
-                        BridgeStore.update(id){it.copy(stage=Stage.FAILED,detail="在 "+it.stage.title+" 阶段失败",error=BridgeStore.redact(t.message?:t.javaClass.simpleName))}
-                        break
-                    }
-                    BridgeStore.update(id){it.copy(stage=Stage.RETRY,
-                        // 别写"通常 X 分钟自动恢复"：真车 23:47 之后四十多分钟没松过，
-                        // 那次自愈是偶然。车机侧的会话只有车机自己放，说清楚比给希望有用。
-                        detail=if(noSyn)"车机仍占着上一次会话，需要车机侧释放（车机重启或熄火锁车）" else "资源已释放，等待恢复连接",
-                        error=BridgeStore.redact(t.message?:"连接中断"))}
-                    delay(options.retryIntervalSeconds*1000L)
+                    if(!onFailure(id,t))break
                 }
+                catch(t:Exception){if(!onFailure(id,t))break}
             }
         }
     }

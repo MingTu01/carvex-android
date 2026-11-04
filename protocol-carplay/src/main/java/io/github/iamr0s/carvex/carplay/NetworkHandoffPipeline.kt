@@ -45,7 +45,17 @@ class NetworkHandoffPipeline<N,P>(
                     browse.onAwait{result->result.getOrNull()?:
                         if(handoff.canAwaitStart())late.await()else result.getOrThrow()}
                 }
-            } finally {late.cancel();browse.cancel()}
+            }
+            catch(t:TimeoutCancellationException){
+                // 走到这里的是**发现器自己的**截止时间（ReceiverDiscovery.await 的 15 秒），
+                // 不是父协程取消。它必须变成一条普通失败：TimeoutCancellationException 属于
+                // CancellationException，一旦原样上抛，上层重试循环会把它读成"整条链被放弃"
+                // 而静默收工（真车 2026-11-03：端点发现超时后一次都没重试过）。
+                currentCoroutineContext().ensureActive()
+                throw SocketTimeoutException(
+                    "Bonjour endpoint deadline: no receiver candidate within the discovery window").also{it.initCause(t)}
+            }
+            finally {late.cancel();browse.cancel()}
         }?:throw SocketTimeoutException("Network handoff endpoint deadline; no usable4301/Bonjour candidate")
         ensureActive();handoff.requireCurrent()
         // Prefer a complete current-link4301 that arrived while discovery resolved.

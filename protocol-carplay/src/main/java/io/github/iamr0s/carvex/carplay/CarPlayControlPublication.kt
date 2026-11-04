@@ -89,7 +89,11 @@ class CarPlayControlPublication(
                     RtspWire.write(it.getOutputStream(),if(valid)"HTTP/1.1 200 OK"else"HTTP/1.1 400 Bad Request",emptyMap())
                     if(valid&&!closed.get()&&current()){
                         invited.complete(Invitation(it.inetAddress,receiver))
-                        log("Control invitation accepted as candidate; authentication and endpoint still independent")
+                        // 只记录头名，不记录值。真车 2026-11-03 两次自动重连都停在这里之后：
+                        // 车机不广播 _airplay 却主动敲这个端口，邀请本身可能就是端点来源。
+                        // 能否走那条路取决于它是否带得出 features/pk——先看有哪些头，再决定。
+                        log("Control invitation accepted as candidate; authentication and endpoint still independent"+
+                            " peer="+it.inetAddress.hostAddress+" headers=["+request.headers.keys.joinToString(",")+"]")
                     }
                 }}catch(t:Exception){if(isActive)log("Control invitation rejected type="+t.javaClass.simpleName)}
                 finally{owned.release(socket)}
