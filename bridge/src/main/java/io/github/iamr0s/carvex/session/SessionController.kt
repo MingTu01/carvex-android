@@ -175,6 +175,9 @@ class SessionController(
             // releaseCastCore，车机把无线 CarPlay 子系统拆掉重建要 60~90 秒——失败一次就
             // 赔掉一分半钟，而且赔掉的正是重试要等的那段时间（真车 2026-11-05 22:47）。
             val lease=CarNetworkLease(context){message->BridgeStore.log(BridgeStore.state.value.id,message)}
+            // 这一整段会话期间都不主动停投屏（含每一轮失败的收尾）：CarWith 收到 stopCast 就
+            // releaseCastCore 并 forceStop 我们，重试循环跑不完一轮就被杀。见 CastRetention。
+            CastRetention.begin()
             try{
                 while(isActive){
                     if(attempt<Int.MAX_VALUE)attempt++
@@ -193,7 +196,11 @@ class SessionController(
                     }
                     catch(t:Exception){if(!onFailure(id,t))break}
                 }
-            }finally{lease.close()}
+            }finally{
+                // 会话真的结束：把重试期间攒下的 stopCast 补发掉，别给宿主留一个僵尸投屏。
+                CastRetention.release()
+                lease.close()
+            }
         }
     }
     private suspend fun openLocalVideoContent(id:String,surface:Surface,width:Int,height:Int,fps:Int):LocalVideoContent? {
