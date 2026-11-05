@@ -228,9 +228,12 @@ class ReceiverDiscovery(context:Context,private val path:NetworkPath,private val
          *  不是在"抢时间"，而是在"给车机自救"。它到期会以 SocketTimeoutException 形式失败，
          *  由上层重试（不是取消整条链）。 */
         const val DISCOVERY_WINDOW_MS=15_000L
-        /** 已经收到车机邀请时的追加等待：车机明说了"开始吧"，它只是还没把 _airplay 广播起来
-         *  （真车冷启动约 45 秒）。多等这一段，比放开 Wi-Fi 让 CarWith forceStop 再重来一轮便宜。 */
-        const val EXTENSION_WINDOW_MS=45_000L
+        /** 已经收到车机邀请时的追加等待。车机明说了"开始吧"，它只是还没把 _airplay 广播起来。
+         *  上限由宿主决定：真车 2026-11-05 实测 CarWith 每次连接尝试的硬预算是 **40 秒**
+         *  （三段会话 40.1 / 40.0 / 40.0 秒，误差 0.1 秒），而浏览大约在服务启动后 7 秒才开始，
+         *  所以真正能用的窗口约 33 秒。15+15=30 秒留出一点余量让我们自己干净收尾，
+         *  而不是超时后被 SIGKILL——被杀掉时连失败原因都写不进日志。 */
+        const val EXTENSION_WINDOW_MS=15_000L
         /** 只要出现就记录的服务类型；`_raop`/`_hap` 判 AirPlay 2，`_mfi-config` 是 Cinemo 系（GM）的实现线索。
          *  逐个浏览而不是只查一个：三个车机样本的服务集本来就不同（t3-carplay-spec §9.2）。 */
         val CLUE_SERVICES=listOf("_raop._tcp.","_hap._tcp.","_mfi-config._tcp.")

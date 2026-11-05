@@ -153,12 +153,20 @@ class SessionController(
                     return false
                 }
                 android.util.Log.i(FAIL,"retryable -> stage RETRY; next attempt in "+options.retryIntervalSeconds+"s")
+                // 车机"不理人"（不再 ACK）时它已经卡住了，按默认 2 秒重试等于每 5 秒去戳一辆
+                // 半死的车机。留出更长的间隔，让它有机会自己把无线子系统放干净。
+                val silentPeer=generateSequence<Throwable>(t){it.cause}.any{cause->
+                    cause is java.net.SocketTimeoutException&&cause.message?.contains("stopped acknowledging")==true
+                }
+                val waitMs=if(silentPeer)maxOf(options.retryIntervalSeconds*1000L,6_000L)
+                    else options.retryIntervalSeconds*1000L
+                if(silentPeer)android.util.Log.i(FAIL,"peer is wedged; backing off "+waitMs+"ms before the next attempt")
                 BridgeStore.update(id){it.copy(stage=Stage.RETRY,
                     // 别写"通常 X 分钟自动恢复"：真车 23:47 之后四十多分钟没松过，
                     // 那次自愈是偶然。车机侧的会话只有车机自己放，说清楚比给希望有用。
                     detail=if(noSyn)"车机仍占着上一次会话，需要车机侧释放（车机重启或熄火锁车）" else "资源已释放，等待恢复连接",
                     error=BridgeStore.redact(t.message?:"连接中断"))}
-                delay(options.retryIntervalSeconds*1000L)
+                delay(waitMs)
                 return true
             }
             var attempt=0

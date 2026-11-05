@@ -102,10 +102,10 @@ class CarPlayRunner(
                         requireNotNull(metadata.deviceId),metadata.publicKey,metadata)
                 }finally{resources.release(discovery)}
             },
-            // 端点总闸必须罩得住"15 秒基础窗口 + 45 秒邀请延长"（=60 秒），否则延长等于白设。
+            // 端点总闸必须罩得住"15 秒基础窗口 + 15 秒邀请延长"（=30 秒），否则延长等于白设。
             // 它不会拖慢"车机不在场"的情况：没有邀请时发现器自己 15 秒就抛 SocketTimeoutException，
             // 直接穿出这个 block，根本走不到总闸。
-            endpointWaitMs=75_000)
+            endpointWaitMs=40_000)
         return pipeline.open(bootstrap)
     }
 

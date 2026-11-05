@@ -125,6 +125,10 @@ class IapLink(input:InputStream, private val output:OutputStream,
     private data class TxSlot(val seq:Int,val payload:ByteArray,var attempts:Int=0,
                               var sentAtNanos:Long=0L,var retransmitRequested:Boolean=false)
     private val txSlots=java.util.LinkedHashMap<Int,TxSlot>()
+    /** 最近一次"收到 ACK 并推进"的时刻；0 表示当前没有进行中的发送。
+     *  它衡量的是"车机多久没理我们"，不是"某一帧重传了多久"——后者每次重传都会被刷新，
+     *  永远看不出对端已经死了。见 [SILENT_ABORT_MS]。 */
+    private var lastAckProgressNanos=0L
     /** Last cumulative ACK accepted for the current generation. It is initialized to the
      *  pre-data send sequence so an ACK for the first slot advances from a known baseline. */
     private var receivedAck=-1
@@ -277,6 +281,7 @@ class IapLink(input:InputStream, private val output:OutputStream,
             receivedAck=-1
             sentAck=0
             txSlots.clear()
+            lastAckProgressNanos=0L
             ackLock.notifyAll()
         }
         partial.reset();outOfOrder.clear();incoming.clear()
@@ -840,6 +845,7 @@ class IapLink(input:InputStream, private val output:OutputStream,
         if(peerWindow>0&&((last-ack) and 255)>peerWindow)return
         receivedAck=ack
         acknowledged=ack
+        lastAckProgressNanos=System.nanoTime()
         val done=txSlots.values.filter{((ack-it.seq) and 255)<128}.map{it.seq}
         done.forEach{txSlots.remove(it)}
         pendingSeq=txSlots.keys.firstOrNull()?:-1
@@ -963,9 +969,24 @@ class IapLink(input:InputStream, private val output:OutputStream,
                     }
                 }else{
                     val capacity=peerWindow.coerceAtLeast(1)
+                    // 这一轮发送的起点：没有待确认帧时，静默计时从此刻算起。
+                    if(txSlots.isEmpty())lastAckProgressNanos=now
                     while(nextChunk<chunks.size&&txSlots.size<capacity){
                         sendSeq=(sendSeq+1) and 255
                         txSlots[sendSeq]=TxSlot(sendSeq,chunks[nextChunk++])
+                    }
+                    // 车机已经彻底不理我们了：不要再一秒一发地重传。
+                    // 真车 2026-11-05 22:07:09 收下 5702 之后不再 ACK，我们在这里重传了 9 次，
+                    // 第 9 次它直接 Connection reset by peer，随后车机黑屏重启。旧护栏只看
+                    // 单帧的重传次数（要 10 次、约 9 秒才放），而车机的 iAP 底座可能一直是活的、
+                    // 只是无线子系统卡住——多喊几声只会把它逼到复位。
+                    if(lastAckProgressNanos!=0L&&txSlots.isNotEmpty()){
+                        val silentMs=(now-lastAckProgressNanos)/1_000_000L
+                        if(silentMs>=SILENT_ABORT_MS){
+                            val timeout=java.net.SocketTimeoutException("iAP peer stopped acknowledging "+
+                                silentMs+"ms ago while sending; closing instead of retransmitting into a wedged stack")
+                            error=timeout;negotiatedControlSession=null;close();failure(timeout);throw timeout
+                        }
                     }
                     val retryLimit=retryCount+1
                     for(slot in txSlots.values.toList()){
@@ -1043,3 +1064,8 @@ class IapLink(input:InputStream, private val output:OutputStream,
     }
 }
 private class SocketTimeoutExceptionCompat(s:String):java.net.SocketTimeoutException(s)
+
+/** 发送过程中"车机多久没 ACK 就松手"。健康车机是 20~50ms，整份真车日志没有例外；
+ *  一旦上到秒级，就不是慢，而是它的协议栈不处理输入了。取 3 秒：留出一次网络抖动的余量，
+ *  又不至于像旧规则那样重传 9~12 次（约 9 秒）把车机逼到 `Connection reset by peer`。 */
+private const val SILENT_ABORT_MS=3_000L
