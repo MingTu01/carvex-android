@@ -90,8 +90,12 @@ class SessionController(
     private fun carBusyAt():Long=
         context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).getLong(KEY_CAR_BUSY_AT,0L)
     private fun markCarBusy(){
-        context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
-            .putLong(KEY_CAR_BUSY_AT,System.currentTimeMillis()).apply()
+        // 必须 commit() 同步落盘：真车 2026-11-05 00:04:31 那一轮，failure 写进日志与 SIGKILL
+        // 只隔 1 毫秒，apply() 的异步写根本来不及，下一轮读不到标记就白等了。
+        runCatching{
+            context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
+                .putLong(KEY_CAR_BUSY_AT,System.currentTimeMillis()).commit()
+        }
     }
     private var carPlayAudioTestJob:Job?=null
     private var carWithAudioProbeJob:Job?=null
@@ -144,9 +148,6 @@ class SessionController(
                     cause is java.net.SocketTimeoutException&&cause.message?.contains("NO_SYN")==true
                 }
                 if(noSyn){markNoSyn();BridgeStore.log(id,"iAP NO_SYN: the car still holds the previous session; refreshing SDP and retrying until it releases")}
-                // iAP 链路那一段失败（RFCOMM 被车机关掉、或它干脆不说话）说明车机还没放开上一段
-                // 会话。记下时刻，下一轮开始前先安静等够 [CAR_QUIET_MS]，别把它推得更远。
-                if(BridgeStore.state.value.stage==Stage.DETECT)markCarBusy()
                 // 空消息的异常（例如候选为空时抛的那条 IllegalStateException）只靠类型无法定位，把栈截断打出来。
                 BridgeStore.log(id,"failure stack: "+t.stackTraceToString().take(2048))
                 BridgeStore.log(id,ProtocolTrace.event(BridgeStore.state.value.stage.name,"session","local","attempt","failed",t.javaClass.simpleName))
@@ -1262,6 +1263,9 @@ class SessionController(
             val firstFrameDeadline=video?.let{timer.schedule({if(frames.get()==0L)failure(java.net.SocketTimeoutException("No video frame written"))},15000,TimeUnit.MILLISECONDS)}
             try{throw failed.await()}finally{firstFrameDeadline?.cancel(false)}
         } finally {
+            // 必须在 cleanup 之前落盘：cleanup 里的 unbind/stopCast 会让 CarWith 立刻杀掉我们，
+            // 真车实测那个间隔只有 1 毫秒。落在 onFailure 里永远太晚——那时候 unbind 已经发出去了。
+            if(BridgeStore.state.value.stage==Stage.DETECT)markCarBusy()
             ended.set(true);voiceToggle.close();startAudio.set(null);startSpeech.set(null);audioDemand.close();metrics.cancel(false);applyDynamicFps=null;applyBitrate=null;sendKey=null;carPlayAudioTestJob?.cancel();carPlayAudioTestJob=null;carWithAudioProbeJob?.cancel();carWithAudioProbeJob=null
             phoneNowPlaying?.stop();phoneNowPlaying=null
             cleanup.close()
