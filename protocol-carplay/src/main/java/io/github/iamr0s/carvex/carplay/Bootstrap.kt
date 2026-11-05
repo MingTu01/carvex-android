@@ -1025,8 +1025,17 @@ object Bootstrap {
         // Network lease reuse must never replace the newly accepted 43/01 snapshot.
         return result
     }
-    suspend fun network(context:Context,b:WifiBootstrap,r:Resources,log:(String)->Unit,onFailure:(Throwable)->Unit):NetworkPath = suspendCancellableCoroutine{cont->
+    /** [lease] 非空时，网络回调登记在它名下，而不是登记在"本次尝试"的 [r]。
+     *  这样做是为了让租约跨尝试存活：放开 `WifiNetworkSpecifier` 等于通知 CarWith"投屏结束了"，
+     *  它会 `releaseCastCore` 并让车机把无线 CarPlay 子系统整个重启一遍（真车 2026-11-05 22:47
+     *  实测：放租约后车机 7000 端口 ECONNREFUSED 约 60 秒）。见 [CarNetworkLease]。
+     *  [reuse] 让已经举着的网络直接复用，不再发一次 specifier——重发会让 CarWith 看到
+     *  网络消失又出现，等于自己制造一次"投屏结束"。 */
+    suspend fun network(context:Context,b:WifiBootstrap,r:Resources,log:(String)->Unit,onFailure:(Throwable)->Unit,
+                        lease:Resources?=null,reuse:(()->NetworkPath?)?=null):NetworkPath = suspendCancellableCoroutine{cont->
         val cm=context.getSystemService(ConnectivityManager::class.java)
+        // 回调的归属：有租约就归租约，否则跟着这次尝试一起生灭。
+        val owned=lease?:r
         val stopped=java.util.concurrent.atomic.AtomicBoolean(false)
         val completion=java.util.concurrent.atomic.AtomicBoolean(false)
         val cancellationRegistration=java.util.concurrent.atomic.AtomicReference<CallbackRegistration?>()
@@ -1035,7 +1044,18 @@ object Bootstrap {
         // Resource teardown can race Android's callback executor. Claim completion
         // once, rather than using a racy isActive -> resume pair on each thread.
         r.own(AutoCloseable{stopped.set(true);reject(java.io.IOException("Wi-Fi lease closed"))})
-        cont.invokeOnCancellation{stopped.set(true);cancellationRegistration.get()?.close()}
+        // 举着租约时，取消只放弃"这一次等待"，绝不能撤掉回调：撤掉就等于放掉网络。
+        cont.invokeOnCancellation{stopped.set(true);if(lease==null)cancellationRegistration.get()?.close()}
+        // 上一轮已经拿下这条网络并且我们还举着它：直接复用，连 specifier 都不发。
+        reuse?.invoke()?.let{cached->
+            val properties=runCatching{cm.getLinkProperties(cached.network)}.getOrNull()
+            if(properties!=null&&NetworkLinkReadiness.isReady(properties.interfaceName,properties.linkAddresses.map{it.address})){
+                log("reusing the Wi-Fi lease already held across attempts; interface="+properties.interfaceName)
+                complete(NetworkPath(cached.network,properties))
+                return@suspendCancellableCoroutine
+            }
+            log("the Wi-Fi lease held from the previous attempt is no longer usable; requesting the network again")
+        }
         // 已经连在目标 SSID 上时直接复用现有网络：再发一次 specifier 会触发重新关联，
         // 打断正在使用的链路（现场表现为后续 TCP 连接 8 秒超时）。4301 给的凭据与此一致。
         runCatching{
@@ -1052,7 +1072,7 @@ object Bootstrap {
                     }
                     val request=NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
                         .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build()
-                    val registration=r.own(CallbackRegistration(
+                    val registration=owned.own(CallbackRegistration(
                         {cm.registerNetworkCallback(request,monitor)},
                         {monitoring.set(false);cm.unregisterNetworkCallback(monitor)}))
                     cancellationRegistration.set(registration)
@@ -1116,12 +1136,13 @@ object Bootstrap {
                 if(delivered)onFailure(error)else reject(error)
             }}
         }
-        val registration=r.own(CallbackRegistration(
+        val registration=owned.own(CallbackRegistration(
             {cm.requestNetwork(request,callback)},
             {cm.unregisterNetworkCallback(callback)}))
         r.own(AutoCloseable{
             stopped.set(true)
-            registration.close()
+            // 回调属于租约时，这里只放弃等待，不能撤掉回调——撤掉就是放掉车机网络。
+            if(lease==null)registration.close()
             reject(java.io.IOException("Wi-Fi request closed"))
         })
         cancellationRegistration.set(registration)

@@ -170,23 +170,30 @@ class SessionController(
                 return true
             }
             var attempt=0
-            while(isActive){
-                if(attempt<Int.MAX_VALUE)attempt++
-                if(!isActive)break
-                val id=BridgeStore.begin(attempt)
-                try { attempt(id,options,fromHost,refreshSdpAfterNoSyn);break }
-                catch(t:kotlinx.coroutines.CancellationException){
-                    // TimeoutCancellationException 也是 CancellationException：它表示"本地截止时间到了"，
-                    // 而不是父协程被取消。真取消会在 ensureActive() 处抛出并结束循环；上下文仍活跃，
-                    // 就说明这个超时是执行体自己抛出来的，必须按失败重试。
-                    // 2026-11-03 真车日志：端点发现 15 秒截止一路穿过 NetworkHandoffPipeline 到这里，
-                    // 被当成取消直接 rethrow，整条重试链静默死掉——没有 failure、没有 RETRY，只有资源
-                    // 释放，此后每个新会话都是 CarWith 重新拉起的外部实例，重试次数实际为 0。
-                    currentCoroutineContext().ensureActive()
-                    if(!onFailure(id,t))break
+            // 会话级 Wi-Fi 租约：跨"尝试"存活，只有整段会话真的结束才放。
+            // 每轮失败就放开 WifiNetworkSpecifier，等于告诉 CarWith"投屏结束了"：它会
+            // releaseCastCore，车机把无线 CarPlay 子系统拆掉重建要 60~90 秒——失败一次就
+            // 赔掉一分半钟，而且赔掉的正是重试要等的那段时间（真车 2026-11-05 22:47）。
+            val lease=CarNetworkLease(context){message->BridgeStore.log(BridgeStore.state.value.id,message)}
+            try{
+                while(isActive){
+                    if(attempt<Int.MAX_VALUE)attempt++
+                    if(!isActive)break
+                    val id=BridgeStore.begin(attempt)
+                    try { attempt(id,options,fromHost,refreshSdpAfterNoSyn,lease);break }
+                    catch(t:kotlinx.coroutines.CancellationException){
+                        // TimeoutCancellationException 也是 CancellationException：它表示"本地截止时间到了"，
+                        // 而不是父协程被取消。真取消会在 ensureActive() 处抛出并结束循环；上下文仍活跃，
+                        // 就说明这个超时是执行体自己抛出来的，必须按失败重试。
+                        // 2026-11-03 真车日志：端点发现 15 秒截止一路穿过 NetworkHandoffPipeline 到这里，
+                        // 被当成取消直接 rethrow，整条重试链静默死掉——没有 failure、没有 RETRY，只有资源
+                        // 释放，此后每个新会话都是 CarWith 重新拉起的外部实例，重试次数实际为 0。
+                        currentCoroutineContext().ensureActive()
+                        if(!onFailure(id,t))break
+                    }
+                    catch(t:Exception){if(!onFailure(id,t))break}
                 }
-                catch(t:Exception){if(!onFailure(id,t))break}
-            }
+            }finally{lease.close()}
         }
     }
     private suspend fun openLocalVideoContent(id:String,surface:Surface,width:Int,height:Int,fps:Int):LocalVideoContent? {
@@ -196,7 +203,8 @@ class SessionController(
         catch(t:Throwable){BridgeStore.log(id,"Local display unavailable: "+t.javaClass.simpleName+" "+(t.message?:""));null}
     }
     private fun reject(s:String){val id=BridgeStore.begin(0);BridgeStore.update(id){it.copy(stage=Stage.FAILED,detail=s,error=s)};BridgeStore.log(id,s)}
-    private suspend fun attempt(id:String,o:Options,fromHost:Boolean,refreshSdp:Boolean=false):Unit=withContext(Dispatchers.IO) {
+    private suspend fun attempt(id:String,o:Options,fromHost:Boolean,refreshSdp:Boolean=false,
+                                lease:CarNetworkLease?=null):Unit=withContext(Dispatchers.IO) {
         val r=Resources{trace->
             BridgeStore.log(id,"Resource close type="+trace.type+" elapsedMs="+trace.elapsedMs+" error="+trace.error)
         }
@@ -863,7 +871,11 @@ class SessionController(
                 catch(t:Exception){if(isActive&&!ended.get())sourceFailure.get().invoke(t)}
             }
             val networkReady=runner.prepareNetwork(bootstrap,networkHandoff){configuration->
-                phase(Stage.WIFI,45000){runner.openNetwork(configuration,::failure)}
+                phase(Stage.WIFI,45000){
+                    // 有会话级租约就走它：失败不再放开网络。没租约（单次调用/测试）时
+                    // 仍按老路走，行为不变。
+                    lease?.join(configuration,::failure)?:runner.openNetwork(configuration,::failure)
+                }
             }
             val network=networkReady.network
             bootstrap=networkReady.bootstrap
