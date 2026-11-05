@@ -29,6 +29,9 @@ import java.util.concurrent.atomic.*
 /** Splash duration before the host takes the encoder surface. */
 private const val SPLASH_MILLIS=6_000L
 
+/** logcat 标签：失败原因与终止判定。这一份不会被"进程被杀时丢掉异步写"影响。 */
+private const val FAIL="CarVexFail"
+
 private const val MIN_BITRATE=1_000_000
 
 /** 按像素率估算码率：约 0.13 bit/像素/帧，最低 1 Mbps。
@@ -122,6 +125,12 @@ class SessionController(
             suspend fun onFailure(id:String,t:Throwable):Boolean{
                 currentCoroutineContext().ensureActive()
                 BridgeStore.log(id,"failure: "+t.javaClass.simpleName+" "+(t.message?:""))
+                // diagnostic.log 是 Channel + 协程异步落盘：失败后 CarWith 往往在十几毫秒内就把我们
+                // SIGKILL 掉，这一整段（失败原因 + 终止判定）从来没写进过文件——2026-11-05 六段会话
+                // 一条 failure 都没有，只能靠"服务被 stop"反推出失败被判成了终止性。logcat 由 logd
+                // 持有，进程死了文字还在，所以这里必须再写一份。
+                android.util.Log.i(FAIL,"failure stage="+BridgeStore.state.value.stage+
+                    " type="+t.javaClass.name+" message="+(t.message?:""))
                 // 一旦确认缓存通道号坏过就一直刷新，不在后续失败里又退回旧缓存。
                 val noSyn=generateSequence<Throwable>(t){it.cause}.any{cause->
                     cause is java.net.SocketTimeoutException&&cause.message?.contains("NO_SYN")==true
@@ -139,9 +148,11 @@ class SessionController(
                 val terminal=(t is IapStartupTimeout)||terminalTransport||t is PairUnsupported||t is SecurityException||t is IllegalArgumentException||t is IllegalStateException||
                     accessoryRejected||t is DigestRequired
                 if(terminal){
+                    android.util.Log.i(FAIL,"terminal -> stage FAILED; the host stops the service, so this is the last attempt")
                     BridgeStore.update(id){it.copy(stage=Stage.FAILED,detail="在 "+it.stage.title+" 阶段失败",error=BridgeStore.redact(t.message?:t.javaClass.simpleName))}
                     return false
                 }
+                android.util.Log.i(FAIL,"retryable -> stage RETRY; next attempt in "+options.retryIntervalSeconds+"s")
                 BridgeStore.update(id){it.copy(stage=Stage.RETRY,
                     // 别写"通常 X 分钟自动恢复"：真车 23:47 之后四十多分钟没松过，
                     // 那次自愈是偶然。车机侧的会话只有车机自己放，说清楚比给希望有用。
