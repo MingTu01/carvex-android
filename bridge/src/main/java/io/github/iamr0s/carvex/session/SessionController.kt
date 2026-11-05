@@ -186,6 +186,10 @@ class SessionController(
             // releaseCastCore，车机把无线 CarPlay 子系统拆掉重建要 60~90 秒——失败一次就
             // 赔掉一分半钟，而且赔掉的正是重试要等的那段时间（真车 2026-11-05 22:47）。
             val lease=CarNetworkLease(context){message->BridgeStore.log(BridgeStore.state.value.id,message)}
+            // 这一整段会话期间都不主动停投屏：CarWith 收到 stopCast 会 releaseCastCore 并 forceStop
+            // 我们。真车 2026-11-05 23:52:44 那一轮最能说明问题——5702 静默重发刚等到 5 秒重试点，
+            // 我们的收尾就把 stopCast 发出去，8 毫秒后 CarWith 杀进程，连失败原因都来不及落盘。
+            CastRetention.begin()
             try{
                 while(isActive){
                     if(attempt<Int.MAX_VALUE)attempt++
@@ -199,12 +203,21 @@ class SessionController(
                         // 2026-11-03 真车日志：端点发现 15 秒截止一路穿过 NetworkHandoffPipeline 到这里，
                         // 被当成取消直接 rethrow，整条重试链静默死掉——没有 failure、没有 RETRY，只有资源
                         // 释放，此后每个新会话都是 CarWith 重新拉起的外部实例，重试次数实际为 0。
+                        // 同步写一份到 logcat：真取消时下面这行 ensureActive() 会直接把整个 launch 结束掉，
+                        // onFailure 一句都不会执行（2026-11-05 23:52:44 就是这样，logcat 里连
+                        // CarVexFail 都没有）。不在这里留痕，就分不清"本地超时"和"被外部取消"。
+                        android.util.Log.i(FAIL,"attempt cancelled: "+t.javaClass.name+" "+(t.message?:"")+
+                            " jobActive="+currentCoroutineContext().isActive)
                         currentCoroutineContext().ensureActive()
                         if(!onFailure(id,t))break
                     }
                     catch(t:Exception){if(!onFailure(id,t))break}
                 }
-            }finally{lease.close()}
+            }finally{
+                // 会话真的结束：把重试期间攒下的 stopCast 补发掉，别给宿主留一个僵尸投屏。
+                CastRetention.release()
+                lease.close()
+            }
         }
     }
     private suspend fun openLocalVideoContent(id:String,surface:Surface,width:Int,height:Int,fps:Int):LocalVideoContent? {

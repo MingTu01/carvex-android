@@ -19,3 +19,6 @@ __pycache__/
 
 # IDE 工程文件：Android Studio 本地生成，路径含本机项目名，不进仓库。
 .idea/
+
+# 监视脚本的实时输出，不入库
+local-backups/logs/*.out

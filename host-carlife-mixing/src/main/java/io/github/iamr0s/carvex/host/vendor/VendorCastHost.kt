@@ -24,6 +24,7 @@ import com.baidu.carlife.mixing.aidl.ISystemAudioCallback
 import io.github.iamr0s.carvex.host.MixingMicrophonePcm
 import io.github.iamr0s.carvex.pcm.PcmFormat
 import io.github.iamr0s.carvex.sessioncore.CastHost
+import io.github.iamr0s.carvex.sessioncore.CastRetention
 import io.github.iamr0s.carvex.sessioncore.HostCallbacks
 import io.github.iamr0s.carvex.sessioncore.HostCapabilities
 import io.github.iamr0s.carvex.sessioncore.HostMusic
@@ -316,10 +317,15 @@ class VendorCastHost(
         // 用独立守护线程 + 超时保护，确保 close() 一定在有限时间内返回。
         val remoteRef = remote
         if (remoteRef != null) {
-            val stopThread = Thread({ runCatching { remoteRef.stopCast() } }, "vendor-stopCast")
-            stopThread.isDaemon = true
-            stopThread.start()
-            runCatching { stopThread.join(1_000) } // 最多等 1 秒，超时就放弃
+            // 重试期间不能真的发 stopCast：CarWith 收到就 releaseCastCore 并 forceStop 我们，
+            // 重试循环连同失败日志一起死在进程里。交给 [CastRetention] 推迟到会话结束再补。
+            val deferred = CastRetention.defer { remoteRef.stopCast() }
+            if (!deferred) {
+                val stopThread = Thread({ runCatching { remoteRef.stopCast() } }, "vendor-stopCast")
+                stopThread.isDaemon = true
+                stopThread.start()
+                runCatching { stopThread.join(1_000) } // 最多等 1 秒，超时就放弃
+            }
         }
         runCatching { remote?.asBinder()?.unlinkToDeath(death, 0) }
         remote = null
