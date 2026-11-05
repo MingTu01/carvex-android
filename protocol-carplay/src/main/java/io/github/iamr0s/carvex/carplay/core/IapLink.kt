@@ -983,9 +983,13 @@ class IapLink(input:InputStream, private val output:OutputStream,
                     if(lastAckProgressNanos!=0L&&txSlots.isNotEmpty()){
                         val silentMs=(now-lastAckProgressNanos)/1_000_000L
                         if(silentMs>=SILENT_ABORT_MS){
-                            val timeout=java.net.SocketTimeoutException("iAP peer stopped acknowledging "+
-                                silentMs+"ms ago while sending; closing instead of retransmitting into a wedged stack")
-                            error=timeout;negotiatedControlSession=null;close();failure(timeout);throw timeout
+                            // 车机不 ACK **不等于它坏了**：它多半还占着上一段会话（真车 2026-11-05
+                            // 22:47，要 90 秒才松口）。而关掉链路会让车机看到连接消失——它那边的
+                            // launcher 立刻 `stopCast`，CarWith 跟着 `releaseCastCore`、拆掉接收端、
+                            // 强杀我们，重建又是 90 秒。丢这一次发送、退避后重发，比整条会话重来便宜得多。
+                            // 所以这里只放弃这一帧，把链路原样交回调用方，由它决定退避还是收场。
+                            txSlots.clear();pendingSeq=-1;ackPending=false;lastAckProgressNanos=0L
+                            throw PeerSilentException(silentMs)
                         }
                     }
                     val retryLimit=retryCount+1
@@ -1064,6 +1068,17 @@ class IapLink(input:InputStream, private val output:OutputStream,
     }
 }
 private class SocketTimeoutExceptionCompat(s:String):java.net.SocketTimeoutException(s)
+
+/** 车机还在线、只是不再 ACK 我们的发送。
+ *
+ *  **这不是链路终结**：`IapLink` 会保留链路和同步状态，调用方可以退避之后重发。
+ *  继承 [java.net.SocketTimeoutException] 是为了让既有的"对端不吭声"判定继续成立，
+ *  同时给出一个能区分"该重试"与"该收场"的类型。
+ *
+ *  真车 2026-11-05 22:47 的教训：车机还占着上一段会话时，我们把它当成致命错误关掉链路，
+ *  车机那边的 launcher 立刻 `stopCast`，CarWith 跟着拆接收端重建——一次失败赔 90 秒。 */
+class PeerSilentException(val silentMs:Long):java.net.SocketTimeoutException(
+    "iAP peer stopped acknowledging "+silentMs+"ms ago while sending")
 
 /** 发送过程中"车机多久没 ACK 就松手"。健康车机是 20~50ms，整份真车日志没有例外；
  *  一旦上到秒级，就不是慢，而是它的协议栈不处理输入了。取 3 秒：留出一次网络抖动的余量，

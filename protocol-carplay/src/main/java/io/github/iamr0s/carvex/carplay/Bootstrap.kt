@@ -115,6 +115,14 @@ object Bootstrap {
     private const val SILENT_PEER_ABORT_MS=3_000L
     /** After the Wi-Fi configuration arrives, how long a still-missing 0x5703 announcement is awaited. */
     private const val ANNOUNCEMENT_WAIT_MS=30_000L
+    /** 车机不 ACK 时的退避预算与间隔。
+     *
+     *  预算必须小于宿主 CarWith 的单次尝试预算（40 秒，三段会话 40.1/40.0/40.0 秒），
+     *  否则我们"耐心等待"本身会被它判成失败；25 秒留出大约 13 秒把余下的协商做完。
+     *  代价是车机真的死了时我们多等 22 秒——但换来的是"它只是还占着上一段会话"这种
+     *  最常见的情形不必再赔上 90 秒重建。 */
+    private const val PEER_SILENT_BUDGET_MS=25_000L
+    private const val PEER_SILENT_RETRY_MS=5_000L
     @SuppressLint("MissingPermission")
     fun devices(context:Context):List<Device> {
         val adapter=context.getSystemService(BluetoothManager::class.java).adapter?:return emptyList()
@@ -472,7 +480,25 @@ object Bootstrap {
             // waiting for a message the peer never promised to send.
             val routes=requireNotNull(identified).capabilities.networkHandoff
             if(routes.wifiAnnouncement){
-                send(0x5702);announcementDeadline=System.nanoTime()+ANNOUNCEMENT_WAIT_MS*1_000_000
+                // 车机暂时不 ACK 时**绝不能收摊**：收摊等于告诉它这条连接没了，它那边的
+                // launcher 立刻 `stopCast`，CarWith 接着 `releaseCastCore` 并拆掉接收端——
+                // 重建要 90 秒（真车 2026-11-05 22:47 实测）。所以这里退避着重发，
+                // 把宿主那 40 秒预算花在"等它松口"上，而不是花在"重建"上。
+                val silentDeadline=System.nanoTime()+PEER_SILENT_BUDGET_MS*1_000_000L
+                while(true){
+                    try{send(0x5702);break}
+                    catch(t:PeerSilentException){
+                        if(System.nanoTime()+PEER_SILENT_RETRY_MS*1_000_000L>silentDeadline)throw t
+                        log("the car has not acknowledged 5702 for "+t.silentMs+"ms; it is most likely still "+
+                            "holding the previous session. Staying connected and retrying in "+
+                            PEER_SILENT_RETRY_MS+"ms instead of tearing the session down "+
+                            "(budget "+(PEER_SILENT_BUDGET_MS/1000)+"s)")
+                        try{Thread.sleep(PEER_SILENT_RETRY_MS)}catch(t2:InterruptedException){
+                            Thread.currentThread().interrupt();throw t
+                        }
+                    }
+                }
+                announcementDeadline=System.nanoTime()+ANNOUNCEMENT_WAIT_MS*1_000_000
             }
             if(routes.carPlayStartSession){
                 send(0x4300,listOf(1 to IapWire.fields(listOf(0 to byteArrayOf(1),1 to IapWire.cstring(phoneMac)))))
