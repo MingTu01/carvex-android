@@ -78,10 +78,15 @@ class CarPlayRunner(
 
     suspend fun prepareNetwork(bootstrap:WifiBootstrap,handoff:IapNetworkHandoff,
         join:suspend(WifiBootstrap)->NetworkPath):NetworkHandoffPipeline.Ready<NetworkPath,CarPlayControlPublication> {
+        // 本轮的控制通道发布。discover 需要知道"车机是否已经敲过我们"，因为邀请存在与否决定
+        // 要不要在 15 秒之后多等一段（见 ReceiverDiscovery.await 的 extendOnInvitation）。
+        // 顺序由 pipeline 保证：publish 一定先于 discover（NetworkHandoffPipeline.open）。
+        val current=java.util.concurrent.atomic.AtomicReference<CarPlayControlPublication?>()
         val pipeline=NetworkHandoffPipeline(handoff,join,
             publish={path:NetworkPath->
                 resources.own(CarPlayControlPublication(context,path,options,
                     {runCatching{handoff.requireCurrent()}.isSuccess},host::log,host::failure)).also{publication->
+                    current.set(publication)
                     handoff.configuration()?.endpoint?.addresses.orEmpty().mapNotNull{address->
                         runCatching{Bootstrap.address(path.properties,address)}.getOrNull()
                     }.let(publication::candidates)
@@ -92,11 +97,15 @@ class CarPlayRunner(
                 val discovery=ReceiverDiscovery(context,path,value,resources,host::log)
                 try{
                     discovery.start()
-                    val metadata=discovery.await()
+                    val metadata=discovery.await(extendOnInvitation={current.get()?.invited?.isCompleted==true})
                     value.resolved(requireNotNull(metadata.endpoint?.hostAddress),requireNotNull(metadata.port),
                         requireNotNull(metadata.deviceId),metadata.publicKey,metadata)
                 }finally{resources.release(discovery)}
-            })
+            },
+            // 端点总闸必须罩得住"15 秒基础窗口 + 45 秒邀请延长"（=60 秒），否则延长等于白设。
+            // 它不会拖慢"车机不在场"的情况：没有邀请时发现器自己 15 秒就抛 SocketTimeoutException，
+            // 直接穿出这个 block，根本走不到总闸。
+            endpointWaitMs=75_000)
         return pipeline.open(bootstrap)
     }
 

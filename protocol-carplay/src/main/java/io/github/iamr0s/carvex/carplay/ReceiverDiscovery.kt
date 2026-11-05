@@ -183,21 +183,39 @@ class ReceiverDiscovery(context:Context,private val path:NetworkPath,private val
     /** 15 秒的等待以前是纯黑箱：日志只有"浏览已开始"，之后要么拿到端点要么什么都没有。
      *  真车 2026-11-03 连续三次都停在这里，只能靠猜。现在每 3 秒报一次内部状态：
      *  found=0 且 services 也没有 _airplay ⇒ 车机这一轮根本没广播；
-     *  found>0 但 ready 未完成 ⇒ 是我们自己的筛选门把它丢了（上面那些 rejected 行会说明是哪道门）。 */
-    suspend fun await():ReceiverMetadata=withTimeout(DISCOVERY_WINDOW_MS){
+     *  found>0 但 ready 未完成 ⇒ 是我们自己的筛选门把它丢了（上面那些 rejected 行会说明是哪道门）。
+     *
+     *  [extendOnInvitation] 由调用方在"本轮已收到车机邀请"时为 true。理由是真车 2026-11-05 的
+     *  开机序列：第 1、2 次尝试各等 15 秒都没看到 _airplay，第 3 次在浏览开始后 1.05 秒就看到了
+     *  —— 车机的广播是**晚到**的（约 45 秒才起来），不是"连不上"。而每次等不到就放开
+     *  WifiNetworkSpecifier，CarWith 立刻判定投屏结束（`launcher receiver stopCast` →
+     *  `forceStopApp`），于是进程被杀、3 秒后重新从蓝牙走一遍。多等一会儿就能省掉整轮重来。 */
+    suspend fun await(extendOnInvitation:()->Boolean={false}):ReceiverMetadata=coroutineScope{
         val startedAt=System.nanoTime()
-        coroutineScope{
-            val heartbeat=launch{
-                while(isActive){
-                    delay(3_000)
-                    val elapsedMs=(System.nanoTime()-startedAt)/1_000_000L
-                    log("Bonjour still searching after "+elapsedMs+"ms: found="+found.get()+
-                        " seen="+seen.size+" pending="+pending.size+" resolving="+resolving.get()+
-                        " services=["+services.joinToString(",")+"] ready="+ready.isCompleted)
-                }
+        val heartbeat=launch{
+            while(isActive){
+                delay(3_000)
+                val elapsedMs=(System.nanoTime()-startedAt)/1_000_000L
+                log("Bonjour still searching after "+elapsedMs+"ms: found="+found.get()+
+                    " seen="+seen.size+" pending="+pending.size+" resolving="+resolving.get()+
+                    " services=["+services.joinToString(",")+"] ready="+ready.isCompleted)
             }
-            try{ready.await()}finally{heartbeat.cancel()}
         }
+        try{
+            var metadata=withTimeoutOrNull(DISCOVERY_WINDOW_MS){ready.await()}
+            // 邀请往往在窗口**中间**才到，所以这里必须在到期的这一刻才问，不能入口处取一次快照。
+            val invited=metadata==null&&extendOnInvitation()
+            if(invited){
+                val waitedMs=(System.nanoTime()-startedAt)/1_000_000L
+                log("Bonjour: the car asked us to start (invitation accepted) but has not advertised "+
+                    "_airplay after "+waitedMs+"ms; keeping the Wi-Fi lease and waiting "+
+                    (EXTENSION_WINDOW_MS/1000)+"s more instead of dropping the lease and being restarted")
+                metadata=withTimeout(EXTENSION_WINDOW_MS){ready.await()}
+            }
+            metadata?:throw java.net.SocketTimeoutException(
+                "Bonjour endpoint deadline: no receiver candidate within "+(DISCOVERY_WINDOW_MS/1000)+"s"+
+                (if(invited)" and no advertisement after an accepted invitation" else ""))
+        }finally{heartbeat.cancel()}
     }
     override fun close(){
         if(closed.compareAndSet(false,true)){
@@ -206,10 +224,13 @@ class ReceiverDiscovery(context:Context,private val path:NetworkPath,private val
         }
     }
     private companion object {
-        /** 端点发现窗口。真车成功样本里 _airplay 在浏览开始后 82ms 就出现，所以这个窗口
+        /** 端点发现窗口。真车成功样本里 _airplay 在浏览开始后 82ms~1.05s 出现，所以这个窗口
          *  不是在"抢时间"，而是在"给车机自救"。它到期会以 SocketTimeoutException 形式失败，
          *  由上层重试（不是取消整条链）。 */
         const val DISCOVERY_WINDOW_MS=15_000L
+        /** 已经收到车机邀请时的追加等待：车机明说了"开始吧"，它只是还没把 _airplay 广播起来
+         *  （真车冷启动约 45 秒）。多等这一段，比放开 Wi-Fi 让 CarWith forceStop 再重来一轮便宜。 */
+        const val EXTENSION_WINDOW_MS=45_000L
         /** 只要出现就记录的服务类型；`_raop`/`_hap` 判 AirPlay 2，`_mfi-config` 是 Cinemo 系（GM）的实现线索。
          *  逐个浏览而不是只查一个：三个车机样本的服务集本来就不同（t3-carplay-spec §9.2）。 */
         val CLUE_SERVICES=listOf("_raop._tcp.","_hap._tcp.","_mfi-config._tcp.")
