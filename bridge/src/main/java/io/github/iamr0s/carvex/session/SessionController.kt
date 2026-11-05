@@ -85,6 +85,14 @@ class SessionController(
         context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
             .putLong(KEY_NO_SYN_AT,System.currentTimeMillis()).apply()
     }
+    /** 车机上一次"把我们拒掉"的时刻（iAP 链路那一段）。见 [CAR_QUIET_MS]。
+     *  必须落盘：真机上进程在每次尝试之间就会被 CarWith 杀掉，内存里的标记下一轮读不到。 */
+    private fun carBusyAt():Long=
+        context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).getLong(KEY_CAR_BUSY_AT,0L)
+    private fun markCarBusy(){
+        context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
+            .putLong(KEY_CAR_BUSY_AT,System.currentTimeMillis()).apply()
+    }
     private var carPlayAudioTestJob:Job?=null
     private var carWithAudioProbeJob:Job?=null
     private data class AudioProbeSample(val category:Int,val rate:Int,val channels:Int,val bytes:Int,val nonzero:Boolean)
@@ -136,6 +144,9 @@ class SessionController(
                     cause is java.net.SocketTimeoutException&&cause.message?.contains("NO_SYN")==true
                 }
                 if(noSyn){markNoSyn();BridgeStore.log(id,"iAP NO_SYN: the car still holds the previous session; refreshing SDP and retrying until it releases")}
+                // iAP 链路那一段失败（RFCOMM 被车机关掉、或它干脆不说话）说明车机还没放开上一段
+                // 会话。记下时刻，下一轮开始前先安静等够 [CAR_QUIET_MS]，别把它推得更远。
+                if(BridgeStore.state.value.stage==Stage.DETECT)markCarBusy()
                 // 空消息的异常（例如候选为空时抛的那条 IllegalStateException）只靠类型无法定位，把栈截断打出来。
                 BridgeStore.log(id,"failure stack: "+t.stackTraceToString().take(2048))
                 BridgeStore.log(id,ProtocolTrace.event(BridgeStore.state.value.stage.name,"session","local","attempt","failed",t.javaClass.simpleName))
@@ -175,9 +186,6 @@ class SessionController(
             // releaseCastCore，车机把无线 CarPlay 子系统拆掉重建要 60~90 秒——失败一次就
             // 赔掉一分半钟，而且赔掉的正是重试要等的那段时间（真车 2026-11-05 22:47）。
             val lease=CarNetworkLease(context){message->BridgeStore.log(BridgeStore.state.value.id,message)}
-            // 这一整段会话期间都不主动停投屏（含每一轮失败的收尾）：CarWith 收到 stopCast 就
-            // releaseCastCore 并 forceStop 我们，重试循环跑不完一轮就被杀。见 CastRetention。
-            CastRetention.begin()
             try{
                 while(isActive){
                     if(attempt<Int.MAX_VALUE)attempt++
@@ -196,11 +204,7 @@ class SessionController(
                     }
                     catch(t:Exception){if(!onFailure(id,t))break}
                 }
-            }finally{
-                // 会话真的结束：把重试期间攒下的 stopCast 补发掉，别给宿主留一个僵尸投屏。
-                CastRetention.release()
-                lease.close()
-            }
+            }finally{lease.close()}
         }
     }
     private suspend fun openLocalVideoContent(id:String,surface:Surface,width:Int,height:Int,fps:Int):LocalVideoContent? {
@@ -212,6 +216,21 @@ class SessionController(
     private fun reject(s:String){val id=BridgeStore.begin(0);BridgeStore.update(id){it.copy(stage=Stage.FAILED,detail=s,error=s)};BridgeStore.log(id,s)}
     private suspend fun attempt(id:String,o:Options,fromHost:Boolean,refreshSdp:Boolean=false,
                                 lease:CarNetworkLease?=null):Unit=withContext(Dispatchers.IO) {
+        // 车机刚拒掉过一轮就走这条路：先安静等它放开，再去碰它。
+        // 2026-11-05 两次手机侧断连都对得上：最后一次探测在 30.3 / 58.2，车机肯应答分别在
+        // 50.3 和下一分钟的 20.5 —— 都晚了约 20 秒。这段时间里探得越勤只是让 CarWith 多杀
+        // 我们一次，车机不会因此更早准备好（那两轮各白跑一次，还吃了一次 EOF 断开）。
+        run{
+            val at=carBusyAt()
+            if(at!=0L){
+                val quiet=at+CAR_QUIET_MS-System.currentTimeMillis()
+                if(quiet>0L){
+                    BridgeStore.log(id,"the car turned us down "+(System.currentTimeMillis()-at)+
+                        "ms ago; staying quiet another "+quiet+"ms before touching it again")
+                    delay(quiet)
+                }
+            }
+        }
         val r=Resources{trace->
             BridgeStore.log(id,"Resource close type="+trace.type+" elapsedMs="+trace.elapsedMs+" error="+trace.error)
         }
@@ -1397,5 +1416,9 @@ class SessionController(
 /** NO_SYN 标记落盘位置（跨服务/控制器实例）；见 [SessionController.refreshSdpAfterNoSyn]。 */
 private const val PREFS_SESSION="session"
 private const val KEY_NO_SYN_AT="no_syn_at"
+private const val KEY_CAR_BUSY_AT="car_busy_at"
+/** 车机拒掉一轮 iAP 之后需要的安静期。真车两次实测都是约 20 秒（见 [KEY_CAR_BUSY_AT] 的用法），
+ *  取同一个值：比它更短等于白跑一轮，更长则白等。 */
+private const val CAR_QUIET_MS=20_000L
 /** NO_SYN 之后多久之内认为"缓存通道号仍然可疑"。 */
 private const val NO_SYN_REFRESH_WINDOW_MS=10*60_000L

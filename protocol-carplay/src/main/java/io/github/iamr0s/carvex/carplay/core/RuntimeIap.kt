@@ -102,7 +102,21 @@ class RuntimeIap(private val emit:(ByteArray)->Boolean,private val log:(String)-
                     if(negotiate!=null){
                         transition(RuntimeIapState.AUTHENTICATING)
                         val generation=link.generation;val epoch=link.linkEpoch
-                        val accepted=negotiate.invoke(link)
+                        // Bootstrap 内部还有一道自己的 checkGeneration()：车机在**引导过程中**重开
+                        // IDPS 时它会抛 IllegalStateException("iAP link changed during bootstrap")。
+                        // 这跟运行期那次重开是同一件事，可恢复，不该把整条 iAP 判死——而且这个异常
+                        // 落在 SessionController 的终止性集合里，一次就让整段会话停在 FAILED、不再重试。
+                        // 真车 2026-11-05 23:36:43 就是这样白丢一轮。
+                        val accepted=try{negotiate.invoke(link)}
+                        catch(t:IllegalStateException){
+                            if(!linkMovedUnderUs(t))throw t
+                            reidentifications++
+                            log("Bootstrap lost the link under it ("+t.message+"); re-identifying (attempt "+
+                                reidentifications+" of "+MAX_REIDENTIFICATIONS+")")
+                            if(reidentifications>MAX_REIDENTIFICATIONS)throw t
+                            awaitResynchronization()
+                            continue
+                        }
                         try{
                             synchronized(this){
                                 check(!closed.get()&&!degraded.get()){"Runtime iAP closed during identification"}
@@ -146,6 +160,13 @@ class RuntimeIap(private val emit:(ByteArray)->Boolean,private val log:(String)-
                 }
             }catch(t:Exception){if(!closed.get())fail(t)}
         },"runtime-iap").apply{isDaemon=true;start()}
+    }
+    /** 只有"链路在脚下被换掉"这一类才当可恢复，其余 IllegalStateException 原样上抛。
+     *  两个来源：Bootstrap 的 `checkGeneration()`（"iAP link changed during bootstrap"）
+     *  与 IapLink 的发送前校验（"iAP control generation changed before send"）。 */
+    private fun linkMovedUnderUs(t:IllegalStateException):Boolean{
+        val m=t.message.orEmpty()
+        return m.contains("iAP link changed")||m.contains("generation changed")
     }
     /** 车机重开 IDPS 之后，IapLink 在它自己的读线程里重跑 SYN 交换；识别必须等它公布新的控制会话。
      *  真车那次 8 毫秒就完成了，但不能假设——抢在前面发 CSM 只会撞上

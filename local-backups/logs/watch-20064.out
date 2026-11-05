@@ -1,0 +1,176 @@
+== watch 20064 start diag=128578 logcat=385193 ==
+D 2026-11-05T15:35:57.921804Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda13 elapsedMs=null error=null
+D 2026-11-05T15:35:57.922001Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda13 elapsedMs=0 error=null
+D 2026-11-05T15:35:57.922373Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda10 elapsedMs=null error=null
+D 2026-11-05T15:35:57.922491Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda10 elapsedMs=0 error=null
+D 2026-11-05T15:35:57.922881Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=null error=null
+D 2026-11-05T15:35:57.923003Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=0 error=null
+D 2026-11-05T15:35:57.923116Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=null error=null
+D 2026-11-05T15:35:57.946069Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=22 error=null
+D 2026-11-05T15:35:57.946384Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=null error=null
+D 2026-11-05T15:35:57.946719Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=0 error=null
+D 2026-11-05T15:35:57.946850Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=null error=null
+D 2026-11-05T15:35:57.947135Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=0 error=null
+D 2026-11-05T15:35:57.947834Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=null error=null
+D 2026-11-05T15:35:57.947980Z [ea0b1c7e] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=0 error=null
+D 2026-11-05T15:35:57.954305Z [ea0b1c7e] failure: IOException Wi-Fi lost
+L 11-05 23:35:58.018 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:35:58.194 D/CarlinkSM(21345): releaseCastCore
+D 2026-11-05T15:36:03.534018Z [entry] Intent extras: manufacturer=String,usb_type=Integer,bindVersion=String,bindPackageName=String,bindClassName=String
+D 2026-11-05T15:36:03.562837Z [2c5f5627] stage HOST
+D 2026-11-05T15:36:03.568808Z [2c5f5627] stage BLUETOOTH
+D 2026-11-05T15:36:03.583503Z [2c5f5627] RFCOMM outbound attempt order=[phone, phone-v2]; simultaneous listener=true
+D 2026-11-05T15:36:03.584410Z [2c5f5627] trace phase=BLUETOOTH transport=RFCOMM direction=tx tx=phone outcome=attempt detail=UUID_CACHE_HINT
+D 2026-11-05T15:36:03.677073Z [2c5f5627] stage DETECT
+D 2026-11-05T15:36:05.792854Z [2c5f5627] stage AUTH
+L 11-05 23:36:03.232 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:36:03.241 D/AppUtils(21345): forceStopApp:com.baidu.carlife
+L 11-05 23:36:03.268 I/ActivityManager( 3472): Start proc 31884:com.baidu.carlife.xiaomi/u0a433 for started-service {com.baidu.carlife.xiaomi/com.baidu.carlife.service.CarlifeConnectService} caller=com.miui.carlink
+D 2026-11-05T15:36:06.543039Z [2c5f5627] stage WIFI
+D 2026-11-05T15:36:09.531273Z [2c5f5627] Wi-Fi multicast lock held; mDNS reception survives the screen turning off
+D 2026-11-05T15:36:24.546586Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda13 elapsedMs=null error=null
+D 2026-11-05T15:36:24.546846Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda13 elapsedMs=0 error=null
+D 2026-11-05T15:36:24.547419Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda10 elapsedMs=null error=null
+D 2026-11-05T15:36:24.547907Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda10 elapsedMs=0 error=null
+D 2026-11-05T15:36:24.550673Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=null error=null
+D 2026-11-05T15:36:24.550852Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=0 error=null
+D 2026-11-05T15:36:24.551Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=null error=null
+D 2026-11-05T15:36:24.552910Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=1 error=null
+D 2026-11-05T15:36:24.553152Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=null error=null
+D 2026-11-05T15:36:24.553977Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=0 error=null
+D 2026-11-05T15:36:24.554573Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=null error=null
+D 2026-11-05T15:36:24.554918Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=0 error=null
+D 2026-11-05T15:36:24.555651Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=null error=null
+D 2026-11-05T15:36:24.555734Z [2c5f5627] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=0 error=null
+D 2026-11-05T15:36:24.557844Z [2c5f5627] failure: SocketTimeoutException Bonjour endpoint deadline: no receiver candidate within 15s
+D 2026-11-05T15:36:24.559678Z [2c5f5627] trace phase=WIFI transport=session direction=local tx=attempt outcome=failed detail=SocketTimeoutException
+D 2026-11-05T15:36:24.919561Z [entry] Intent extras: manufacturer=String,usb_type=Integer,bindVersion=String,bindPackageName=String,bindClassName=String
+D 2026-11-05T15:36:24.946675Z [22e42689] stage HOST
+D 2026-11-05T15:36:24.953889Z [22e42689] stage BLUETOOTH
+D 2026-11-05T15:36:24.967585Z [22e42689] RFCOMM outbound attempt order=[phone, phone-v2]; simultaneous listener=true
+D 2026-11-05T15:36:24.968545Z [22e42689] trace phase=BLUETOOTH transport=RFCOMM direction=tx tx=phone outcome=attempt detail=UUID_CACHE_HINT
+D 2026-11-05T15:36:25.059978Z [22e42689] stage DETECT
+D 2026-11-05T15:36:27.155078Z [22e42689] stage AUTH
+L 11-05 23:36:24.558 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:36:24.613 D/CarlinkSM(21345): releaseCastCore
+L 11-05 23:36:24.672 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:36:24.676 D/AppUtils(21345): forceStopApp:com.baidu.carlife
+L 11-05 23:36:24.712 I/ActivityManager( 3472): Start proc 9266:com.baidu.carlife.xiaomi/u0a433 for started-service {com.baidu.carlife.xiaomi/com.baidu.carlife.service.CarlifeConnectService} caller=com.miui.carlink
+D 2026-11-05T15:36:30.834895Z [22e42689] the car has not acknowledged 5702 for 3001ms; it is most likely still holding the previous session. Staying connected and retrying in 5000ms instead of teari
+D 2026-11-05T15:36:38.838749Z [22e42689] the car has not acknowledged 5702 for 3000ms; it is most likely still holding the previous session. Staying connected and retrying in 5000ms instead of tearing the session down (budget 2
+D 2026-11-05T15:36:43.844267Z [22e42689] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=null error=null
+D 2026-11-05T15:36:43.844535Z [22e42689] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=0 error=null
+D 2026-11-05T15:36:43.844864Z [22e42689] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=null error=null
+D 2026-11-05T15:36:43.846954Z [22e42689] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=1 error=null
+D 2026-11-05T15:36:43.847398Z [22e42689] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=null error=null
+D 2026-11-05T15:36:43.848298Z [22e42689] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=0 error=null
+D 2026-11-05T15:36:43.848691Z [22e42689] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=null error=null
+D 2026-11-05T15:36:43.849633Z [22e42689] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=0 error=null
+D 2026-11-05T15:36:43.851058Z [22e42689] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=null error=null
+D 2026-11-05T15:36:43.851333Z [22e42689] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=0 error=null
+D 2026-11-05T15:36:43.859429Z [22e42689] failure: IllegalStateException iAP link changed during bootstrap
+D 2026-11-05T15:36:43.861461Z [22e42689] trace phase=AUTH transport=session direction=local tx=attempt outcome=fai
+L 11-05 23:36:43.860 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:36:43.894 D/CarlinkSM(21345): releaseCastCore
+D 2026-11-05T15:36:58.558344Z [entry] Intent extras: manufacturer=String,usb_type=Integer,bindVersion=String,bindPackageName=String,bindClassName=String
+D 2026-11-05T15:36:58.589167Z [6896b9e4] stage HOST
+D 2026-11-05T15:36:58.598470Z [6896b9e4] stage BLUETOOTH
+D 2026-11-05T15:36:58.610625Z [6896b9e4] RFCOMM outbound attempt order=[phone, phone-v2]; simultaneous listener=true
+D 2026-11-05T15:36:58.611438Z [6896b9e4] trace phase=BLUETOOTH transport=RFCOMM direction=tx tx=phone outcome=attempt detail=UUID_CACHE_HINT
+D 2026-11-05T15:36:58.814288Z [6896b9e4] stage DETECT
+D 2026-11-05T15:36:59.038820Z [6896b9e4] stage AUTH
+L 11-05 23:36:58.316 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:36:58.322 D/AppUtils(21345): forceStopApp:com.baidu.carlife
+L 11-05 23:36:58.386 I/ActivityManager( 3472): Start proc 10107:com.baidu.carlife.xiaomi/u0a433 for started-service {com.baidu.carlife.xiaomi/com.baidu.carlife.service.CarlifeConnectService} caller=com.miui.carlink
+D 2026-11-05T15:36:59.587660Z [6896b9e4] stage WIFI
+D 2026-11-05T15:37:04.368584Z [6896b9e4] Wi-Fi multicast lock held; mDNS reception survives the screen turning off
+D 2026-11-05T15:37:04.424139Z [6896b9e4] Bonjour candidate found name=CarPlay type=_airplay._tcp.
+D 2026-11-05T15:37:04.480436Z [6896b9e4] stage PAIR
+D 2026-11-05T15:37:06.357693Z [6896b9e4] stage SETUP
+D 2026-11-05T15:37:12.589347Z [6896b9e4] stage SETUP
+D 2026-11-05T15:37:33.860962Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda13 elapsedMs=null error=null
+D 2026-11-05T15:37:33.861191Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda13 elapsedMs=0 error=null
+D 2026-11-05T15:37:33.861872Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda10 elapsedMs=null error=null
+D 2026-11-05T15:37:33.862098Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda10 elapsedMs=0 error=null
+D 2026-11-05T15:37:33.862725Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=null error=null
+D 2026-11-05T15:37:33.862931Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=0 error=null
+D 2026-11-05T15:37:33.863135Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=null error=null
+D 2026-11-05T15:37:33.864548Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=1 error=null
+D 2026-11-05T15:37:33.864807Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=null error=null
+D 2026-11-05T15:37:33.865374Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=0 error=null
+D 2026-11-05T15:37:33.865611Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=null error=null
+D 2026-11-05T15:37:33.865981Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=0 error=null
+D 2026-11-05T15:37:33.866920Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=null error=null
+D 2026-11-05T15:37:33.867168Z [6896b9e4] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=0 error=null
+D 2026-11-05T15:37:33.887312Z [6896b9e4] failure: IOException Wi-Fi lost
+L 11-05 23:37:33.958 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:37:34.032 D/CarlinkSM(21345): releaseCastCore
+D 2026-11-05T15:37:44.641547Z [entry] Intent extras: manufacturer=String,usb_type=Integer,bindVersion=String,bindPackageName=String,bindClassName=String
+D 2026-11-05T15:37:44.674087Z [0c836e99] stage HOST
+D 2026-11-05T15:37:44.683479Z [0c836e99] stage BLUETOOTH
+D 2026-11-05T15:37:44.701836Z [0c836e99] RFCOMM outbound attempt order=[phone, phone-v2]; simultaneous listener=true
+D 2026-11-05T15:37:44.703404Z [0c836e99] trace phase=BLUETOOTH transport=RFCOMM direction=tx tx=phone outcome=attempt detail=UUID_CACHE_HINT
+D 2026-11-05T15:37:44.801990Z [0c836e99] stage DETECT
+L 11-05 23:37:44.391 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:37:44.400 D/AppUtils(21345): forceStopApp:com.baidu.carlife
+L 11-05 23:37:44.421 I/ActivityManager( 3472): Start proc 16296:com.baidu.carlife.xiaomi/u0a433 for started-service {com.baidu.carlife.xiaomi/com.baidu.carlife.service.CarlifeConnectService} caller=com.miui.carlink
+D 2026-11-05T15:37:51.820578Z [0c836e99] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=null error=null
+D 2026-11-05T15:37:51.821115Z [0c836e99] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=0 error=null
+D 2026-11-05T15:37:51.821646Z [0c836e99] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=null error=null
+D 2026-11-05T15:37:51.823768Z [0c836e99] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=1 error=null
+D 2026-11-05T15:37:51.824283Z [0c836e99] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=null error=null
+D 2026-11-05T15:37:51.825623Z [0c836e99] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=0 error=null
+D 2026-11-05T15:37:51.826081Z [0c836e99] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=null error=null
+D 2026-11-05T15:37:51.826834Z [0c836e99] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=0 error=null
+D 2026-11-05T15:37:51.828761Z [0c836e99] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=null error=null
+D 2026-11-05T15:37:51.829257Z [0c836e99] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=0 error=null
+D 2026-11-05T15:37:51.833583Z [0c836e99] failure: EOFException Truncated 0/2
+D 	at io.github.iamr0s.carvex.session.SessionController$attempt$2$10.invokeSuspend(SessionController.kt:790)
+D 	at io.github.iamr0s.carvex.session.SessionController$attempt$2$10.invoke(SessionController.kt:8)
+D 2026-11-05T15:37:51.835361Z [0c836e99] trace phase=DETECT transport=session direction=local tx=attempt outcome=failed detail=EOFException
+D 2026-11-05T15:37:52.134022Z [entry] Intent extras: manufacturer=String,usb_type=Integer,bindVersion=String,bindPackageName=String,bindClassName=String
+D 2026-11-05T15:37:52.162072Z [b3d78e35] stage HOST
+D 2026-11-05T15:37:52.171478Z [b3d78e35] stage BLUETOOTH
+D 2026-11-05T15:37:52.187346Z [b3d78e35] RFCOMM outbound attempt order=[phone, phone-v2]; simultaneous listener=true
+D 2026-11-05T15:37:52.189377Z [b3d78e35] trace phase=BLUETOOTH transport=RFCOMM direction=tx tx=phone outcome=attempt detail=UUID_CACHE_HINT
+D 2026-11-05T15:37:52.363799Z [b3d78e35] stage DETECT
+L 11-05 23:37:51.833 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:37:51.866 D/CarlinkSM(21345): releaseCastCore
+L 11-05 23:37:51.920 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:37:51.924 D/AppUtils(21345): forceStopApp:com.baidu.carlife
+L 11-05 23:37:51.942 I/ActivityManager( 3472): Start proc 16607:com.baidu.carlife.xiaomi/u0a433 for started-service {com.baidu.carlife.xiaomi/com.baidu.carlife.service.CarlifeConnectService} caller=com.miui.carlink
+L 11-05 23:37:54.436 I/adbd    (19851): adbd service requested 'shell,v2,TERM=dumb,raw:grep -a -E 'releaseCastCore|launcher receiver stopCast|forceStopApp:com.baidu.carlife|Start proc [0-9]+:com.baidu.carlife.xiaomi|carlinkDisconnected' /data/local/tmp/live-20064.txt'
+L 11-05 23:37:54.436 I/adbd    (19851): in ShellService: grep -a -E 'releaseCastCore|launcher receiver stopCast|forceStopApp:com.baidu.carlife|Start proc [0-9]+:com.baidu.carlife.xiaomi|carlinkDisconnected' /data/local/tmp/live-20064.txt
+D 2026-11-05T15:37:58.197929Z [b3d78e35] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=null error=null
+D 2026-11-05T15:37:58.202342Z [b3d78e35] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda4 elapsedMs=0 error=null
+D 2026-11-05T15:37:58.203070Z [b3d78e35] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=null error=null
+D 2026-11-05T15:37:58.205561Z [b3d78e35] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda30 elapsedMs=1 error=null
+D 2026-11-05T15:37:58.205874Z [b3d78e35] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=null error=null
+D 2026-11-05T15:37:58.206253Z [b3d78e35] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda28 elapsedMs=0 error=null
+D 2026-11-05T15:37:58.206538Z [b3d78e35] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=null error=null
+D 2026-11-05T15:37:58.206900Z [b3d78e35] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda27 elapsedMs=0 error=null
+D 2026-11-05T15:37:58.209475Z [b3d78e35] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=null error=null
+D 2026-11-05T15:37:58.209706Z [b3d78e35] Resource close type=SessionController$attempt$2$$ExternalSyntheticLambda26 elapsedMs=0 error=null
+D 2026-11-05T15:37:58.218306Z [b3d78e35] failure: EOFException Truncated 0/2
+D 	at io.github.iamr0s.carvex.session.SessionController$attempt$2$10.invokeSuspend(SessionController.kt:790)
+D 	at io.github.iamr0s.carvex.session.SessionController$attempt$2$10.invoke(SessionController.kt:8
+L 11-05 23:37:58.222 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:37:58.259 D/CarlinkSM(21345): releaseCastCore
+L 11-05 23:38:18.271 I/adbd    (19851): adbd service requested 'shell,v2,TERM=dumb,raw:grep -a -E 'releaseCastCore|forceStopApp:com.baidu.carlife.xiaomi|Start proc [0-9]+:com.baidu.carlife.xiaomi' /data/local/tmp/live-20064.txt'
+L 11-05 23:38:18.271 I/adbd    (19851): in ShellService: grep -a -E 'releaseCastCore|forceStopApp:com.baidu.carlife.xiaomi|Start proc [0-9]+:com.baidu.carlife.xiaomi' /data/local/tmp/live-20064.txt
+D 2026-11-05T15:38:20.483643Z [entry] Intent extras: manufacturer=String,usb_type=Integer,bindVersion=String,bindPackageName=String,bindClassName=String
+D 2026-11-05T15:38:20.512334Z [f77f761b] stage HOST
+D 2026-11-05T15:38:20.520308Z [f77f761b] stage BLUETOOTH
+D 2026-11-05T15:38:20.537068Z [f77f761b] RFCOMM outbound attempt order=[phone, phone-v2]; simultaneous listener=true
+D 2026-11-05T15:38:20.538836Z [f77f761b] trace phase=BLUETOOTH transport=RFCOMM direction=tx tx=phone outcome=attempt detail=UUID_CACHE_HINT
+D 2026-11-05T15:38:20.690960Z [f77f761b] stage DETECT
+D 2026-11-05T15:38:20.916549Z [f77f761b] stage AUTH
+L 11-05 23:38:20.254 D/AppUtils(21345): forceStopApp:com.baidu.carlife.xiaomi
+L 11-05 23:38:20.261 D/AppUtils(21345): forceStopApp:com.baidu.carlife
+L 11-05 23:38:20.286 I/ActivityManager( 3472): Start proc 17061:com.baidu.carlife.xiaomi/u0a433 for started-service {com.baidu.carlife.xiaomi/com.baidu.carlife.service.CarlifeConnectService} caller=com.miui.carlink
+D 2026-11-05T15:38:26.452644Z [f77f761b] Wi-Fi multicast lock held; mDNS reception survives the screen turning off
+D 2026-11-05T15:38:26.491357Z [f77f761b] Bonjour candidate found name=CarPlay type=_airplay._tcp.
+D 2026-11-05T15:38:26.550836Z [f77f761b] stage PAIR
+D 2026-11-05T15:38:28.300629Z [f77f761b] stage SETUP
+D 2026-11-05T15:38:34.521714Z [f77f761b] stage SETUP
+D 2026-11-05T15:38:35.868117Z [f77f761b] Runtime iAP link moved under us (generation 1->2, epoch 1->3); the car re-opened IDPS, re-identifying (attempt 1 of 4)
