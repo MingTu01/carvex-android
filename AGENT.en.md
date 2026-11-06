@@ -111,8 +111,10 @@ Rules:
   tracked. `local.properties`, build logs and device-private data stay ignored.
 - Debug and release deliberately share one signing key so they can replace each other on
   a device. Do not split them without an explicit decision.
-- `versionCode` and `versionName` are derived: `20000 + git commit count`. Do not
-  hand-edit a version constant, and do not build distributable artifacts from an archive
+- `versionCode` is derived as `20000 + git commit count`; `versionName` is
+  `<major>.<minor>.<commit count>`. Both positions are derived — the only hand-written
+  values are `versionMajor` / `versionMinor` in `app/build.gradle.kts`. Do not hand-edit
+  any other version constant, and do not build distributable artifacts from an archive
   without git history.
 - Artifact names come from the variant: `CarVex_<brand>_<buildType>_<version>.apk` (and
   `.aab`). Do not rename them manually.

@@ -58,8 +58,10 @@ val keystoreKeyPassword = requireNotNull(keystoreSetting("keyPassword"))
 // ---------------------------------------------------------------------------
 // 版本号与提交号
 //
-// 版本完全由签出派生，不再手工维护：版本号 = 20000 + 提交数（单调递增），
-// 版本名使用相同的纯数字，本机与 CI 保持一致。
+// versionCode 完全由签出派生，不再手工维护：20000 + 提交数（单调递增），本机与 CI 一致。
+// 对外展示的 versionName 用「主版本.次版本.提交数」：20072 只是构建序号，被当成
+// 「第两万零七十二个版本」读起来不像正式软件，而 1.0.72 既像版本号又没丢可追溯性。
+// 主/次版本是唯二手写的地方——要发 1.1 或 2.0 就改这两个常量，补丁位继续跟着提交数。
 // ---------------------------------------------------------------------------
 /** Runs git through providers.exec, so the result is a tracked configuration-cache input rather
  * than an untracked process launch. Null when git is missing or this is not a checkout. */
@@ -69,9 +71,13 @@ fun gitOutput(vararg args:String):String? = runCatching {
 
 val gitCommitCount = gitOutput("rev-list","--count","HEAD")?.toIntOrNull()
 
-/** 20000 + 提交数，保证版本号在任何机器、任何 CI 上都单调且一致。 */
+/** 手写的两位，其余全部派生。 */
+val versionMajor = 1
+val versionMinor = 0
+
+/** 20000 + 提交数，保证 versionCode 在任何机器、任何 CI 上都单调且一致。 */
 val releaseVersionCode = (gitCommitCount ?: 1)+20000
-val releaseVersionName = releaseVersionCode.toString()
+val releaseVersionName = "$versionMajor.$versionMinor."+(gitCommitCount ?: 1)
 
 /** 提交号优先取 CI 环境变量，其次读签出本身，都不是 git 仓库时回退 local。 */
 val buildCommit = providers.environmentVariable("COMMIT_SHA").orNull?.takeIf { it.isNotBlank() }

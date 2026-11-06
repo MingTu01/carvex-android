@@ -148,9 +148,10 @@ APK 产物：
 app/build/outputs/apk/<brand>/<debug|release>/CarVex_<brand>_<buildType>_<version>.apk
 ```
 
-`versionCode` 与 `versionName` 都是 `20000 + git 提交数`，因此构建需要完整的 git 历史
-（`git rev-list --count HEAD`）。没有 `.git` 的源码压缩包会回退到 `10001` / `local`，
-不要用它分发。Debug 与 Release 共用同一把密钥，同一台设备上会互相覆盖。
+`versionCode` 是 `20000 + git 提交数`，`versionName` 是同一次构建的 `<主>.<次>.<提交数>`，
+因此构建需要完整的 git 历史（`git rev-list --count HEAD`）。没有 `.git` 的源码压缩包会
+回退到 `10001` / `1.0.1`，不要用它分发。Debug 与 Release 共用同一把密钥，同一台设备上会
+互相覆盖。
 
 Release 构建开启 R8 与资源压缩。Lint 配置为 `abortOnError = true`，导致 lint 失败的
 告警会直接令构建失败。

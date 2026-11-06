@@ -105,8 +105,9 @@ Wrapper。`compileSdk`/`targetSdk` 为 37，`minSdk` 为 29。
   `local.properties`、构建日志和设备私有数据仍保持忽略。
 - Debug 与 Release 有意共用同一把签名密钥，以便在同一设备上互相覆盖。没有明确决策
   不得拆开。
-- `versionCode` 与 `versionName` 由 `20000 + git 提交数` 派生。不要手改版本常量，
-  也不要用没有 git 历史的压缩包构建可分发包。
+- `versionCode` 由 `20000 + git 提交数` 派生，`versionName` 是 `<主>.<次>.<提交数>`。
+  两个位置都是派生的，手写的只有 `app/build.gradle.kts` 里的 `versionMajor` / `versionMinor`。
+  不要手改其余版本常量，也不要用没有 git 历史的压缩包构建可分发包。
 - 产物名由 variant 决定：`CarVex_<brand>_<buildType>_<version>.apk`（以及 `.aab`）。
   不要手工改名。
 - 保持 R8、资源压缩与 `lint { abortOnError = true }` 开启。若 lint 判断有误，修正
