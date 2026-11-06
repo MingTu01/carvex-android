@@ -172,13 +172,28 @@ class SessionController(
                 val silentPeer=generateSequence<Throwable>(t){it.cause}.any{cause->
                     cause is java.net.SocketTimeoutException&&cause.message?.contains("stopped acknowledging")==true
                 }
-                val waitMs=if(silentPeer)maxOf(options.retryIntervalSeconds*1000L,6_000L)
-                    else options.retryIntervalSeconds*1000L
+                // 车机还占着上一段会话时，任何一次提前重连都是白跑：它对 0x5702 不做处理，
+                // 只能等它自己把旧会话放掉。真车两次实测都是 45.7 秒（2026-11-05 23:23 轮、
+                // 2026-11-06 21:52 轮）。这个等待不能短——2026-11-06 22:12 那一轮就是每 5 秒
+                // 去敲一次，把车机敲到断电重启的。宁可慢，也不能再把车机逼复位。
+                val heldSession=generateSequence<Throwable>(t){it.cause}.any{it is CarHoldsPreviousSessionException}
+                val waitMs=when{
+                    heldSession->maxOf(options.retryIntervalSeconds*1000L,CAR_RELEASE_BACKOFF_MS)
+                    silentPeer->maxOf(options.retryIntervalSeconds*1000L,6_000L)
+                    else->options.retryIntervalSeconds*1000L
+                }
                 if(silentPeer)android.util.Log.i(FAIL,"peer is wedged; backing off "+waitMs+"ms before the next attempt")
+                if(heldSession)android.util.Log.i(FAIL,
+                    "the car still holds the previous session; backing off "+waitMs+
+                        "ms so it can release it before we ask again")
                 BridgeStore.update(id){it.copy(stage=Stage.RETRY,
                     // 别写"通常 X 分钟自动恢复"：真车 23:47 之后四十多分钟没松过，
                     // 那次自愈是偶然。车机侧的会话只有车机自己放，说清楚比给希望有用。
-                    detail=if(noSyn)"车机仍占着上一次会话，需要车机侧释放（车机重启或熄火锁车）" else "资源已释放，等待恢复连接",
+                    detail=when{
+                        heldSession->"车机仍占着上一次会话，正在等它释放（实测约 45 秒，期间不要反复重连）"
+                        noSyn->"车机仍占着上一次会话，需要车机侧释放（车机重启或熄火锁车）"
+                        else->"资源已释放，等待恢复连接"
+                    },
                     error=BridgeStore.redact(t.message?:"连接中断"))}
                 delay(waitMs)
                 return true
@@ -1424,3 +1439,9 @@ private const val KEY_NO_SYN_AT="no_syn_at"
 private const val KEY_CAR_BUSY_AT="car_busy_at"
 /** NO_SYN 之后多久之内认为"缓存通道号仍然可疑"。 */
 private const val NO_SYN_REFRESH_WINDOW_MS=10*60_000L
+/** 车机还占着上一段会话时，下一次尝试要等多久。
+ *
+ *  45 秒来自两次真车实测（2026-11-05 23:23 轮 45.7 秒、2026-11-06 21:52 轮 45.7 秒），
+ *  不是估的。这个数字必须够长：旧行为是 2 秒后重来，而 2026-11-06 22:12 那一轮每 5 秒
+ *  敲一次 0x5702，直接把车机敲到断电重启。宁可多等，也不能再把车机逼复位。 */
+private const val CAR_RELEASE_BACKOFF_MS=45_000L

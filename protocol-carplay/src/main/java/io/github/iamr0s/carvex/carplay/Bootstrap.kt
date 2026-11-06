@@ -100,6 +100,21 @@ fun classifyCarPlayPath(config:WifiBootstrap?,usbTransportReady:Boolean=false):C
 
 class IapStartupTimeout(message:String,val canFallback:Boolean):SocketTimeoutException(message)
 
+/** 车机仍占着上一段会话：它既不回 ACK，也不回 0x5703。
+ *
+ *  这不是丢包，是它对"开始一个新会话"这条请求根本不做处理——只有它自己把手上的旧会话
+ *  放掉才会恢复。真车两次实测都是 45.7 秒（2026-11-05 23:23 轮、2026-11-06 21:52 轮）。
+ *  类型化的意义是让上层按"等它松口"退避，而不是当成普通网络错误在 2 秒后重来——
+ *  2 秒后重来的结果就是再吃一次沉默，然后把它逼到断电重启。
+ *
+ *  继承 IOException 而不是 IllegalStateException：SessionController 的终止性集合里
+ *  有 IllegalStateException，落进去就等于整段会话判死、不再重试。 */
+class CarHoldsPreviousSessionException(val silentMs:Long):java.io.IOException(
+    "the car still holds the previous session: "+
+        (if(silentMs>0L)"it has not acknowledged anything for "+silentMs+"ms"
+         else "it never acknowledged 0x5702")+
+        " and will not start a new one until it releases that session")
+
 object Bootstrap {
     internal fun declarationPairComplete(request:Int,response:Int,accessoryReceives:Set<Int>,accessorySends:Set<Int>)=
         request in accessoryReceives&&response in accessorySends
@@ -115,14 +130,6 @@ object Bootstrap {
     private const val SILENT_PEER_ABORT_MS=3_000L
     /** After the Wi-Fi configuration arrives, how long a still-missing 0x5703 announcement is awaited. */
     private const val ANNOUNCEMENT_WAIT_MS=30_000L
-    /** 车机不 ACK 时的退避预算与间隔。
-     *
-     *  预算必须小于宿主 CarWith 的单次尝试预算（40 秒，三段会话 40.1/40.0/40.0 秒），
-     *  否则我们"耐心等待"本身会被它判成失败；25 秒留出大约 13 秒把余下的协商做完。
-     *  代价是车机真的死了时我们多等 22 秒——但换来的是"它只是还占着上一段会话"这种
-     *  最常见的情形不必再赔上 90 秒重建。 */
-    private const val PEER_SILENT_BUDGET_MS=25_000L
-    private const val PEER_SILENT_RETRY_MS=5_000L
     @SuppressLint("MissingPermission")
     fun devices(context:Context):List<Device> {
         val adapter=context.getSystemService(BluetoothManager::class.java).adapter?:return emptyList()
@@ -482,21 +489,29 @@ object Bootstrap {
             if(routes.wifiAnnouncement){
                 // 车机暂时不 ACK 时**绝不能收摊**：收摊等于告诉它这条连接没了，它那边的
                 // launcher 立刻 `stopCast`，CarWith 接着 `releaseCastCore` 并拆掉接收端——
-                // 重建要 90 秒（真车 2026-11-05 22:47 实测）。所以这里退避着重发，
-                // 把宿主那 40 秒预算花在"等它松口"上，而不是花在"重建"上。
-                val silentDeadline=System.nanoTime()+PEER_SILENT_BUDGET_MS*1_000_000L
-                while(true){
-                    try{send(0x5702);break}
-                    catch(t:PeerSilentException){
-                        if(System.nanoTime()+PEER_SILENT_RETRY_MS*1_000_000L>silentDeadline)throw t
-                        log("the car has not acknowledged 5702 for "+t.silentMs+"ms; it is most likely still "+
-                            "holding the previous session. Staying connected and retrying in "+
-                            PEER_SILENT_RETRY_MS+"ms instead of tearing the session down "+
-                            "(budget "+(PEER_SILENT_BUDGET_MS/1000)+"s)")
-                        try{Thread.sleep(PEER_SILENT_RETRY_MS)}catch(t2:InterruptedException){
-                            Thread.currentThread().interrupt();throw t
-                        }
-                    }
+                // 重建要 90 秒（真车 2026-11-05 22:47 实测）。
+                //
+                // 但也**绝不重发 0x5702**。这一点以前修过一半：IapLink 里 `SILENT_ABORT_MS`
+                // 的注释记着 2026-11-05 22:07:09 那轮，重传 9 次之后车机直接
+                // `Connection reset by peer`，随后黑屏重启。当时只掐掉了 iAP 层每秒一发的重传，
+                // 外层这里「每 5 秒再来一轮」把同一个错误以更粗的颗粒重演了一遍：
+                // 2026-11-06 22:12:29 那一轮 5702 连发 6 帧，车机从 `.339` 之后再没出过声，
+                // 紧接着就是断电重启，重启完才连得上。
+                //
+                // 沉默的原因不是丢包，是它手上还攥着上一段会话、对这条请求不做处理。重发改变
+                // 不了这个状态，只会在一辆已经卡住的车机上加压。所以只发一次，沉默就照实上报，
+                // 「等它松口」交给上层退避——那个退避是 45 秒，不是 2 秒。
+                // 沉默有两种形态，两条都必须落到同一个判定上，否则等于只修了一半：
+                //   1) IapLink 的静默守卫（3 秒无 ACK 进展）抛 PeerSilentException，链路还活着；
+                //   2) 链路把单帧的重传次数用完，抛 `iAP ACK timeout seq=N`——注意它抛之前
+                //      已经 `close()` 了链路，所以这种情形下连"再发一次"的机会都没有。
+                // 哪一条先到取决于 SYN 协商出来的 retryMs/retries：真车协商成 1000ms/30 次时
+                // 是第 1 条；夹具那种小参数是第 2 条。只处理第 1 条会让第 2 条退回 2 秒重试。
+                try{send(0x5702)}
+                catch(t:PeerSilentException){throw CarHoldsPreviousSessionException(t.silentMs)}
+                catch(t:java.net.SocketTimeoutException){
+                    if(t.message?.startsWith("iAP ACK timeout")!=true)throw t
+                    throw CarHoldsPreviousSessionException(0L)
                 }
                 announcementDeadline=System.nanoTime()+ANNOUNCEMENT_WAIT_MS*1_000_000
             }

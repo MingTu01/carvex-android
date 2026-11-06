@@ -22,3 +22,4 @@ __pycache__/
 
 # 监视脚本的实时输出，不入库
 local-backups/logs/*.out
+local-backups/logs/timeline-*.txt

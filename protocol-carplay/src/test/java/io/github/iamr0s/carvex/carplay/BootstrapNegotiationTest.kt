@@ -97,6 +97,19 @@ class BootstrapNegotiationTest {
                 return IapWire.u16(frame.payload,4) to IapWire.parseFieldList(frame.payload.copyOfRange(6,frame.payload.size))
             }
         }
+        /** 读到 [id] 为止，但**故意不对它回 ACK**：模拟车机不再处理输入
+         *  （真车里最常见的原因是它还占着上一段会话）。其余消息照常 ACK，
+         *  否则卡住的是前面的 4E/AA 而不是被测的那一条。 */
+        fun nextAckingAllBut(id:Int):Int {
+            while(true){
+                val frame=IapWire.read(carIn)
+                if(frame.payload.isEmpty())continue
+                hostSeq=frame.seq
+                val messageId=if(frame.session==17&&frame.payload.size>=6)IapWire.u16(frame.payload,4) else -1
+                if(messageId==id)return id
+                ack(frame.seq)
+            }
+        }
         val logs=java.util.concurrent.CopyOnWriteArrayList<String>()
         val awaitingStart=java.util.concurrent.CountDownLatch(1)
         var onBootstrapLog:((String)->Unit)?=null
@@ -545,8 +558,34 @@ class BootstrapNegotiationTest {
             assertNull(result.endpoint);assertEquals("synthetic",result.ssid)
         }
     }
-    @Test(timeout=10000) fun invalid5703TerminationNeverReachesPlatformButValidReplacementDoes() {
+    /** 车机不 ACK 0x5702 时，只许发**一次**。
+     *
+     *  这条沉默不是丢包，是车机手上还占着上一段会话——它对"开始一个新会话"这条请求
+     *  根本不做处理，重发改变不了这个状态。真车 2026-11-06 22:12:29 那一轮按旧的
+     *  「每 5 秒重发、预算 25 秒」连发了 6 帧 5702，车机从 `.339` 之后再没出过声，
+     *  紧接着就是断电重启，重启完才连得上。
+     *
+     *  两个断言各自钉住一半：`outputAttempts` 按 (seq,session,payload) 去重，链路层重传
+     *  只算一次，应用层重发才会变成第二条；`elapsedMs` 钉住"不再花满 25 秒预算"。
+     *  异常类型钉住"上层要按等它松口退避，而不是 2 秒后重来"。 */
+    @Test(timeout=20000) fun silent5702IsRequestedOnceAndReportedAsHeldPreviousSession() {
         Peer(2).use { peer ->
+            val accessory=SyntheticAccessory();peer.initialize()
+            val work=peer.negotiate()
+            authenticateV2(peer,accessory,byteArrayOf(0x57,3),byteArrayOf(0x57,2))
+            assertEquals(0x5702,peer.nextAckingAllBut(0x5702))
+            val started=System.nanoTime()
+            val error=assertThrows(ExecutionException::class.java){work.get(12,TimeUnit.SECONDS)}.cause
+            val elapsedMs=(System.nanoTime()-started)/1_000_000
+            assertTrue("expected CarHoldsPreviousSessionException but was "+error,error is CarHoldsPreviousSessionException)
+            assertEquals(1,peer.outputAttempts.count{it==0x5702})
+            assertTrue("silence cost "+elapsedMs+"ms; it should give up around 3s, not spend a 25s budget",elapsedMs<8_000)
+            assertTrue("the old 5s retry log must be gone: "+peer.logs,
+                peer.logs.none{it.contains("Staying connected and retrying")})
+        }
+    }
+
+    @Test(timeout=10000) fun invalid5703TerminationNeverReachesPlatformButValidReplacementDoes() {        Peer(2).use { peer ->
             val accessory=SyntheticAccessory();peer.initialize()
             val callbacks=java.util.concurrent.atomic.AtomicInteger()
             val work=peer.negotiate(onWifiAnnouncement={callbacks.incrementAndGet()})
