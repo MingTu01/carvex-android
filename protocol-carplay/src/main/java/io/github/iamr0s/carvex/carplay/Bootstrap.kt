@@ -108,10 +108,15 @@ class IapStartupTimeout(message:String,val canFallback:Boolean):SocketTimeoutExc
  *  2 秒后重来的结果就是再吃一次沉默，然后把它逼到断电重启。
  *
  *  继承 IOException 而不是 IllegalStateException：SessionController 的终止性集合里
- *  有 IllegalStateException，落进去就等于整段会话判死、不再重试。 */
-class CarHoldsPreviousSessionException(val silentMs:Long):java.io.IOException(
+ *  有 IllegalStateException，落进去就等于整段会话判死、不再重试。
+ *
+ *  [withheldMs] 是"这一轮根本没有发 5702"的情形：上一个进程刚被拒过，编排层落盘的标记
+ *  还在时效内，于是连问都不问。它和"问了但没人应"对上层是同一个结论（等它松口），
+ *  但必须能分开记录——否则日志会显示我们发了一条根本没发出去的消息。 */
+class CarHoldsPreviousSessionException(val silentMs:Long,val withheldMs:Long=-1L):java.io.IOException(
     "the car still holds the previous session: "+
-        (if(silentMs>0L)"it has not acknowledged anything for "+silentMs+"ms"
+        (if(withheldMs>=0L)"we withheld 0x5702 because it turned us down "+withheldMs+"ms ago"
+         else if(silentMs>0L)"it has not acknowledged anything for "+silentMs+"ms"
          else "it never acknowledged 0x5702")+
         " and will not start a new one until it releases that session")
 
@@ -349,9 +354,11 @@ object Bootstrap {
                   onCarPlayStartRequest:CarPlayStartRequest?=null,
                   onWifiAnnouncement:WifiAnnouncementHandler?=null,
                   identificationWaitMs:Long=10_000L,
-                  networkHandoff:IapNetworkHandoff?=null):WifiBootstrap =
+                  networkHandoff:IapNetworkHandoff?=null,
+                  carRefusedMsAgo:Long=-1L):WifiBootstrap =
         requireNotNull(negotiateSession(link,phoneMac,deviceName,identity,previous,experimentalIntegrityOnly,false,log,handoffWaitMs,
-            onNowPlayingCommand,onDigitalKeyRequest,onDeviceWifiInfoRequest,onCarPlayStartRequest,onWifiAnnouncement,identificationWaitMs,networkHandoff).wifi)
+            onNowPlayingCommand,onDigitalKeyRequest,onDeviceWifiInfoRequest,onCarPlayStartRequest,onWifiAnnouncement,identificationWaitMs,networkHandoff,
+            carRefusedMsAgo).wifi)
 
     /** A target Link owns fresh authentication and capabilities; it never inherits Bluetooth state. */
     fun negotiateRuntime(link:IapLink,phoneMac:String,deviceName:String,identity:PairIdentity,
@@ -375,7 +382,8 @@ object Bootstrap {
                   onCarPlayStartRequest:CarPlayStartRequest?=null,
                   onWifiAnnouncement:WifiAnnouncementHandler?=null,
                   identificationWaitMs:Long=10_000L,
-                  networkHandoff:IapNetworkHandoff?=null):ControlResult {
+                  networkHandoff:IapNetworkHandoff?=null,
+                  carRefusedMsAgo:Long=-1L):ControlResult {
         require(handoffWaitMs in 1..30_000L)
         // Existing local budget, not an inferred Apple timeout. Tests may only shorten it.
         require(identificationWaitMs in 1..10_000L)
@@ -507,6 +515,18 @@ object Bootstrap {
                 //      已经 `close()` 了链路，所以这种情形下连"再发一次"的机会都没有。
                 // 哪一条先到取决于 SYN 协商出来的 retryMs/retries：真车协商成 1000ms/30 次时
                 // 是第 1 条；夹具那种小参数是第 2 条。只处理第 1 条会让第 2 条退回 2 秒重试。
+                //
+                // 上一个进程刚刚在这一步被拒过（标记由编排层落盘，见 SessionController 的
+                // markCarBusy）：车机还在攥着旧会话，这一轮连问都不问。理由和固件一致 ——
+                // `_iap2_wifisharing_RequestAccessoryWiFiConfigurationInformation @0x100170bb0`
+                // 在 feature 22 启动时只发一次，固件里根本没有「再问一遍」这个动作；
+                // 而 CarWith 每几百毫秒到几秒就把我们重启一次，新进程没有内存里的记忆，
+                // 光靠进程内退避等于每几秒戳一次已经卡住的车机 —— 2026-11-06 22:12 那一轮
+                // 就是这么把它戳到断电重启的。
+                if(carRefusedMsAgo>=0L){
+                    log("the car turned us down "+carRefusedMsAgo+"ms ago; withholding 0x5702 so a stuck car can release the old session")
+                    throw CarHoldsPreviousSessionException(0L,carRefusedMsAgo)
+                }
                 try{send(0x5702)}
                 catch(t:PeerSilentException){throw CarHoldsPreviousSessionException(t.silentMs)}
                 catch(t:java.net.SocketTimeoutException){

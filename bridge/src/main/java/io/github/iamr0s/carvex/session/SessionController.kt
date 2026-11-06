@@ -85,10 +85,13 @@ class SessionController(
         context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
             .putLong(KEY_NO_SYN_AT,System.currentTimeMillis()).apply()
     }
-    /** 车机上一次"把我们拒掉"的时刻。**当前没有消费者**：安静期方案（2026-11-06 20067）
-     *  实测把断连→出流从 49 秒拖到 77.6 秒，已被撤掉（20068）。
-     *  保留写入是因为它同步落盘，正好能在"failure 与 SIGKILL 只隔 1 毫秒"的场景里活下来，
-     *  以后要做"重试节流"时直接读它即可。见 [markCarBusy]。 */
+    /** 车机上一次在「开始一个新会话」这一步把我们拒掉的时刻。
+     *
+     *  消费方是 [attempt] 里的 `carRefusedMsAgo`：时效内这一轮干脆不发 0x5702。
+     *  必须落盘，因为 CarWith 在两次尝试之间会重启我们 —— 进程内的退避跨不过去。
+     *
+     *  2026-11-06（20070）之前这个标记一直**没人写**：写入点被限定在 `stage==DETECT`，
+     *  而真车失败时停的是 `AUTH`（"车机身份与签名"），条件从来没成立过。现在按异常类型判定。 */
     private fun carBusyAt():Long=
         context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).getLong(KEY_CAR_BUSY_AT,0L)
     private fun markCarBusy(){
@@ -98,6 +101,17 @@ class SessionController(
             context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
                 .putLong(KEY_CAR_BUSY_AT,System.currentTimeMillis()).commit()
         }
+    }
+    /** 车机上次拒绝距现在多久；没有记录或已过时效返回 -1。
+     *
+     *  时效直接用 [CAR_RELEASE_BACKOFF_MS]：真车两次实测都是 45.7 秒，比它短等于问一次白问，
+     *  比它长等于白等。这里只回答「这一轮要不要再开口」，不阻塞任何步骤 ——
+     *  20067 的安静期教训是停下来等会把 CarWith 自己的节奏一起丢掉，反而更慢。 */
+    private fun carRefusedMsAgo():Long{
+        val at=carBusyAt()
+        if(at==0L)return -1L
+        val ago=System.currentTimeMillis()-at
+        return if(ago in 0 until CAR_RELEASE_BACKOFF_MS)ago else -1L
     }
     private var carPlayAudioTestJob:Job?=null
     private var carWithAudioProbeJob:Job?=null
@@ -814,7 +828,7 @@ class SessionController(
             override fun voice(action:String):Boolean=directVoiceAction(action)
             override fun warn(message:String){BridgeStore.update(id){s->s.copy(warning=BridgeStore.redact(message))}}
         }
-        val runner=CarPlayRunner(context,o,r,carPlayHost,refreshSdp)
+        val runner=CarPlayRunner(context,o,r,carPlayHost,refreshSdp,carRefusedMsAgo())
             val bt=phase(Stage.BLUETOOTH,90000){runner.openBluetooth()}
             val pendingSourceEof=AtomicReference<Throwable?>(null)
             val sourceFailure=AtomicReference<(Throwable)->Unit>({error->
@@ -1264,11 +1278,19 @@ class SessionController(
             // a false session failure.
             val firstFrameDeadline=video?.let{timer.schedule({if(frames.get()==0L)failure(java.net.SocketTimeoutException("No video frame written"))},15000,TimeUnit.MILLISECONDS)}
             try{throw failed.await()}finally{firstFrameDeadline?.cancel(false)}
-        } finally {
-            // 记下"车机最后一次把我们拒在 iAP 链路"的时刻，供以后做重试节流用（当前无消费者）。
+        } catch(t:Throwable){
+            // 记下"车机把我们拒在【开始一个新会话】这一步"的时刻，下一个进程据此不再去敲它。
             // 必须在 cleanup 之前落盘：cleanup 里的 unbind/stopCast 会让 CarWith 立刻杀掉我们，
             // 真车实测那个间隔只有 1 毫秒，落在 onFailure 里永远太晚——那时 unbind 已经发出去了。
-            if(BridgeStore.state.value.stage==Stage.DETECT)markCarBusy()
+            //
+            // 判据是异常类型而不是 stage：真车失败停在 AUTH（"车机身份与签名"），
+            // 以前按 stage==DETECT 判定，这个标记从来没被写过。
+            //
+            // 只记"真的问过还被拒"（withheldMs<0）。如果这一轮本来就是**因为**标记才没问，
+            // 再写一次等于把 45 秒窗口往后推，标记永远不会过期，车机就再也等不到下一问。
+            if(generateSequence<Throwable>(t){it.cause}.any{it is CarHoldsPreviousSessionException&&it.withheldMs<0L})markCarBusy()
+            throw t
+        } finally {
             ended.set(true);voiceToggle.close();startAudio.set(null);startSpeech.set(null);audioDemand.close();metrics.cancel(false);applyDynamicFps=null;applyBitrate=null;sendKey=null;carPlayAudioTestJob?.cancel();carPlayAudioTestJob=null;carWithAudioProbeJob?.cancel();carWithAudioProbeJob=null
             phoneNowPlaying?.stop();phoneNowPlaying=null
             cleanup.close()

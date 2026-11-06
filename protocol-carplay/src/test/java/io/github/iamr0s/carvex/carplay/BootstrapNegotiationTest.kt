@@ -113,12 +113,31 @@ class BootstrapNegotiationTest {
         val logs=java.util.concurrent.CopyOnWriteArrayList<String>()
         val awaitingStart=java.util.concurrent.CountDownLatch(1)
         var onBootstrapLog:((String)->Unit)?=null
+        /** 一路 ACK 到手机不再有新帧为止。
+         *
+         *  [nextAckingAllBut] 适合"会等到某条消息"的场景；这里要测的是"某条消息**永远不来**"，
+         *  只能按安静下来判定。哪个 ID 是识别阶段最后一条属于声明组合的函数，钉死它会让
+         *  测试在无关的声明变化上假失败。 */
+        fun ackUntilSilent(quietMs:Int=800):Int {
+            var acked=0
+            while(true){
+                var waited=0
+                while(carIn.available()==0&&waited<quietMs){Thread.sleep(20);waited+=20}
+                if(carIn.available()==0)return acked
+                val frame=IapWire.read(carIn)
+                if(frame.payload.isEmpty())continue
+                hostSeq=frame.seq
+                ack(frame.seq)
+                acked++
+            }
+        }
         fun negotiate(handoffWaitMs:Long=30_000L,onDigitalKeyRequest:DigitalKeyMatcher?=null,
                       onDeviceWifiInfoRequest:DeviceWifiInfoProvider?=null,
                       onCarPlayStartRequest:CarPlayStartRequest?=null,
                       onWifiAnnouncement:WifiAnnouncementHandler?=null,
                       identificationWaitMs:Long=10_000L,
-                      networkHandoff:IapNetworkHandoff?=null)=worker.submit<WifiBootstrap> {
+                      networkHandoff:IapNetworkHandoff?=null,
+                      carRefusedMsAgo:Long=-1L)=worker.submit<WifiBootstrap> {
             Bootstrap.negotiate(link,"02:11:22:33:44:55","synthetic",PairIdentity("synthetic",ByteArray(32)),
                 experimentalIntegrityOnly=true,handoffWaitMs=handoffWaitMs,log={message->
                     logs+=message
@@ -126,7 +145,8 @@ class BootstrapNegotiationTest {
                     onBootstrapLog?.invoke(message)
                 },onDigitalKeyRequest=onDigitalKeyRequest,onDeviceWifiInfoRequest=onDeviceWifiInfoRequest,
                 onCarPlayStartRequest=onCarPlayStartRequest,onWifiAnnouncement=onWifiAnnouncement,
-                identificationWaitMs=identificationWaitMs,networkHandoff=networkHandoff)
+                identificationWaitMs=identificationWaitMs,networkHandoff=networkHandoff,
+                carRefusedMsAgo=carRefusedMsAgo)
         }
         override fun close(){link.close();carOut.close();carIn.close();worker.shutdownNow()}
     }
@@ -585,8 +605,43 @@ class BootstrapNegotiationTest {
         }
     }
 
-    @Test(timeout=10000) fun invalid5703TerminationNeverReachesPlatformButValidReplacementDoes() {        Peer(2).use { peer ->
+    /** 上一个进程刚被拒过时，这一轮连 0x5702 都不发。
+     *
+     *  进程内的 45 秒退避（[silent5702IsRequestedOnceAndReportedAsHeldPreviousSession]）
+     *  管不住 CarWith：它在两次尝试之间会把我们重启，新进程没有内存里的记忆。
+     *  所以编排层把"被拒时刻"落盘，再算出 `carRefusedMsAgo` 传进来。
+     *
+     *  断言的是"一个字节都没发"，不是"发了但更少"：车机卡在旧会话时，任何一次
+     *  0x5702 都是在加压，而这正是 2026-11-06 22:12 那一轮把它逼到断电重启的动作。 */
+    @Test(timeout=15000) fun recentRefusalWithholds5702InsteadOfAskingAStuckCarAgain() {
+        Peer(2).use { peer ->
             val accessory=SyntheticAccessory();peer.initialize()
+            val work=peer.negotiate(carRefusedMsAgo=12_000L)
+            authenticateV2(peer,accessory,byteArrayOf(0x57,3),byteArrayOf(0x57,2))
+            // 5702 本来就不会出现，只能按"手机安静下来"收尾。
+            peer.ackUntilSilent()
+            val error=assertThrows(ExecutionException::class.java){work.get(8,TimeUnit.SECONDS)}.cause
+            assertTrue("expected CarHoldsPreviousSessionException but was "+error,error is CarHoldsPreviousSessionException)
+            assertEquals(12_000L,(error as CarHoldsPreviousSessionException).withheldMs)
+            assertEquals("a stuck car must not be asked again: "+peer.outputAttempts,0,peer.outputAttempts.count{it==0x5702})
+            assertTrue("the withheld decision has to be visible in the log: "+peer.logs,
+                peer.logs.any{it.contains("withholding 0x5702")})
+        }
+    }
+
+    @Test(timeout=10000) fun anExpiredRefusalLets5702GoOutAgain() {
+        Peer(2).use { peer ->
+            val accessory=SyntheticAccessory();peer.initialize()
+            // -1 是"没有记录"，也就是标记已过时效：这一轮必须恢复正常发问。
+            val work=peer.negotiate(carRefusedMsAgo=-1L)
+            authenticateV2(peer,accessory,byteArrayOf(0x57,3),byteArrayOf(0x57,2))
+            assertEquals(0x5702,peer.nextOf(0x5702).first)
+            peer.command(0x5703,wifiAnnouncement(security=2))
+            assertEquals("synthetic",work.get(3,TimeUnit.SECONDS).ssid)
+        }
+    }
+
+    @Test(timeout=10000) fun invalid5703TerminationNeverReachesPlatformButValidReplacementDoes() {        Peer(2).use { peer ->            val accessory=SyntheticAccessory();peer.initialize()
             val callbacks=java.util.concurrent.atomic.AtomicInteger()
             val work=peer.negotiate(onWifiAnnouncement={callbacks.incrementAndGet()})
             authenticateV2(peer,accessory,byteArrayOf(0x57,3),byteArrayOf(0x57,2))

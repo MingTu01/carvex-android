@@ -41,6 +41,9 @@ class CarPlayRunner(
     /** 上一次尝试以 `NO_SYN` 收场时置真：重连前强制重做一次 SDP。
      *  理由见 Bootstrap 里的 SDP 刷新注释 —— 平台缓存里的 RFCOMM 通道号可能已经作废。 */
     private val refreshSdpBeforeConnect: Boolean = false,
+    /** 车机上一次把我们拒在「开始新会话」这一步距今多少毫秒；-1 表示没有这条记录。
+     *  由编排层从落盘标记算出来：CarWith 会在两次尝试之间重启我们，内存里记不住。 */
+    private val carRefusedMsAgo: Long = -1L,
 ) {
     /** 建立蓝牙 RFCOMM 连接（链路层，握手前）。 */
     suspend fun openBluetooth(): android.bluetooth.BluetoothSocket =
@@ -70,6 +73,7 @@ class CarPlayRunner(
         onCarPlayStartRequest = onCarPlayStartRequest,
         onWifiAnnouncement = onWifiAnnouncement,
         networkHandoff = networkHandoff,
+        carRefusedMsAgo = carRefusedMsAgo,
     )
 
     /** 加入车机 Wi-Fi 并准备网络路径。 */
