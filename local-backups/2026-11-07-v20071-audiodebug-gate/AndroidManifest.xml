@@ -1,0 +1,115 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-feature
+        android:name="android.hardware.bluetooth"
+        android:required="true" />
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.ACCESS_COARSE_LOCATION"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="31" />
+    <!-- API 37 gates LAN access behind its own runtime permission: without it every socket to the
+         car's private address fails with EPERM, which reads like a routing or VPN problem. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- 预测式返回（跟手的返回手势）需要显式接入平台的 OnBackInvoked 分发器。
+         targetSdk>=33 时默认开启，但这里写明是**有意的**：
+         关掉它 PredictiveBackHandler 不会有任何回调，而且不会有任何报错 ——
+         属于"静默失效"那一类，写清楚免得以后被误删。 -->
+    <application
+        android:name="io.github.iamr0s.carvex.BridgeApp"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/backup_rules"
+        android:enableOnBackInvokedCallback="true"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+        <activity
+            android:name="io.github.iamr0s.carvex.ui.activity.MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity-alias
+            android:name="com.baidu.carlife.CarlifeActivity"
+            android:exported="true"
+            android:targetActivity="io.github.iamr0s.carvex.ui.activity.MainActivity" />
+        <!-- Vendor CarLife launchers use these legacy permission component names. Keep them as
+             aliases so every flavor has the same exported entry surface. -->
+        <activity-alias android:name="com.baidu.carlife.mix.oppo.OppoPermissionActivity" android:exported="true" android:targetActivity="io.github.iamr0s.carvex.ui.activity.MainActivity" />
+        <activity-alias android:name="com.baidu.carlife.mix.vivo.VivoPermissionActivity" android:exported="true" android:targetActivity="io.github.iamr0s.carvex.ui.activity.MainActivity" />
+        <activity-alias android:name="com.baidu.carlife.mix.samsung.SamsungPermissionActivity" android:exported="true" android:targetActivity="io.github.iamr0s.carvex.ui.activity.MainActivity" />
+        <activity-alias android:name="com.baidu.carlife.mix.honor.HonorPermissionActivity" android:exported="true" android:targetActivity="io.github.iamr0s.carvex.ui.activity.MainActivity" />
+        <activity
+            android:name="com.baidu.carlife.mix.xiaomi.XiaomiPermissionActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:theme="@style/PermissionTheme" />
+        <!-- Shizuku 通过这个 provider 把 binder 交给我们；少了它 checkSelfPermission 永远未授权。 -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+        <!-- 日志分享：把 cache/logs 下的副本以 content:// 交给系统分享面板。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+        <!-- 只为拿「通知使用权」而存在：没有它 MediaSessionManager.getActiveSessions()
+             直接抛 SecurityException，车机上就没有歌名/歌手可显示。不读任何通知内容。 -->
+        <service
+            android:name="io.github.iamr0s.carvex.NowPlayingAccessService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <!-- ADB 运行时音频调试广播：免重编/重装切音频参数 -->
+        <receiver
+            android:name="io.github.iamr0s.carvex.AudioDebugReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.github.iamr0s.carvex.AUDIO_DEBUG" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>
+

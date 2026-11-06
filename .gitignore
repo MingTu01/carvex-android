@@ -8,6 +8,9 @@ artifacts/
 # assembleRelease 的产物（APK、mapping.txt、output-metadata.json），不属源码。
 app/release/
 app/*/release/
+# 上面那条 `app/*/release/` 会顺带匹配到 app/src/release/ —— 那是 release **源集**
+# （只放了正式包要摘掉的组件），属于源码，必须放回来。
+!/app/src/release/
 *.log
 
 # Local JDK, Android SDK and Gradle cache

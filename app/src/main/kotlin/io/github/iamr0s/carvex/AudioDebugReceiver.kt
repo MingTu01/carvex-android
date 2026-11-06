@@ -3,6 +3,7 @@ package io.github.iamr0s.carvex
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.util.Log
 import io.github.iamr0s.carvex.sessioncore.BridgeStore
 import io.github.iamr0s.carvex.carplay.core.AudioDebugConfig
@@ -30,10 +31,25 @@ import io.github.iamr0s.carvex.session.HidProbeHook
  *  ```
  *
  *  所有参数都是可选的，只改传了的那些。`reconnect=true` 改完自动断开重连。
+ *
+ *  **只对可调试的包生效。** 正式包里这个 receiver 既被 `app/src/release/AndroidManifest.xml`
+ *  摘掉，`onReceive` 里也会按 `FLAG_DEBUGGABLE` 直接拒绝 —— 见那里的说明。
  */
 class AudioDebugReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION) return
+        // 这条广播能改音频加密开关（audioPlaintext）、强制断连重连、重开屏幕流、跑 hidMode 探针，
+        // 组件又是 exported 且没有 android:permission —— 手机上任一 App 都能发它。
+        // 它只该在调试包里生效。
+        //
+        // 判据用 FLAG_DEBUGGABLE 而不是 BuildConfig.DEBUG：不需要在 gradle 里打开 buildConfig，
+        // 而且它问的正是"这个包允许调试吗"这个真实问题，不依赖某个构建 flag 的默认值。
+        // 正式包里这个组件还会被 app/src/release/AndroidManifest.xml 整个摘掉，
+        // 这里是有意的第二道：万一以后有人把清单项加回 main，也不会重新变成敞口。
+        if (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE == 0) {
+            Log.w(TAG, "AudioDebug ignored: this build is not debuggable (action=" + intent.action + ")")
+            return
+        }
         val prefs = context.getSharedPreferences("options", Context.MODE_PRIVATE)
         val editor = prefs.edit()
         var changed = false

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 正式包里把 ADB 音频调试广播整个摘掉。
+     它是 exported 且没有 android:permission，手机上任一 App 都能发，
+     而它能改 audioPlaintext（关掉音频加密）、强制断连重连、重开屏幕流。
+     调试包（src/main）照旧保留，ADB 用法见 AudioDebugReceiver 的注释。
+     AudioDebugReceiver.onReceive 里还有一道 FLAG_DEBUGGABLE 判断：
+     两道都留着，是为了以后有人把清单项加回 main 时不会重新变成敞口。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application>
+        <receiver
+            android:name="io.github.iamr0s.carvex.AudioDebugReceiver"
+            tools:node="remove" />
+    </application>
+</manifest>
