@@ -23,3 +23,5 @@ __pycache__/
 # 监视脚本的实时输出，不入库
 local-backups/logs/*.out
 local-backups/logs/timeline-*.txt
+# 每个版本目录里的 APK 只留本机：源码快照入库，75MB 的包不入库
+local-backups/**/*.apk
