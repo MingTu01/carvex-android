@@ -81,16 +81,9 @@ data class Settings(
     val scanIntervalSec: Int = 15,
     val methods: Set<Method> = setOf(Method.Bluetooth),
     val theme: ThemeMode = ThemeMode.System,
-    val experimentalAuth: Boolean = false,
-    /** 静帧重发：CarWith 接管帧源后不会自己重绘，静止画面会让编码器零输出。
-     *  打开后用编码器前置画布把手里那帧再提交一次，换出一个小 P 帧维持媒体流。
-     *  代价是每帧一次 blit 和几帧延迟。 */
-    val frontSurface: Boolean = false,
-    /** 诊断：MFi/SAP 音频发明文，不做 AES-CTR。用来判定"没声音"是密码层错还是车机没在听。 */
-    val audioPlaintext: Boolean = false,
-    /** 音频投送：真的对车机建立 CarPlay 音频流。默认关 —— 实车上"建音频"和"有画面"目前互斥。 */
-    val audioEnabled: Boolean = false,
-    /** Enable navigation and voice-assistant audio output; disabled by default while the path is diagnosed. */
+    // 实验认证 / 静帧重发 / 音频投送 / 音频明文 曾有对应的界面开关，现已在 UI 上去掉：
+    // 前两个必须开、第三个是正常功能、第四个只是一次性诊断。它们仍留在 [BridgeStore] 的
+    // Options 里（要落盘、要能在 run-as 下手改），只是不再经过 UI 状态。
 )
 
 /** Per-device options shown on the manage page. */

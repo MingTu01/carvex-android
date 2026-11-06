@@ -49,7 +49,10 @@ const val DEFAULT_COLOR_VIOLET=0xFF7A4FCF.toInt()
 
 data class Options(val appearance:Appearance=Appearance.SYSTEM,val color:Int=DEFAULT_COLOR_VIOLET,val target:String="",
                    val phoneMac:String="",val listen:Boolean=false,val retryIntervalSeconds:Int=2,val dpi:Int=160,
-                   val experiment:Boolean=false,val deviceName:String="",val bindNetwork:Boolean=true,val frontSurface:Boolean=false,
+                   // 实验认证 = iAP 隧道 + MFi 校验 + 认证后才允许的 bootstrap。
+                   // 实车跑通靠的就是这条路，关掉它整个会话建立不起来，所以默认开、
+                   // 也不再给界面开关 —— 留一个一按就没声音没画面的按钮没有意义。
+                   val experiment:Boolean=true,val deviceName:String="",val bindNetwork:Boolean=true,val frontSurface:Boolean=false,
                    /** 「主动连接」：本端主动发起（关掉 = 只做被连接方，等价于原来的 listen=true）。
                     *  默认开：绝大多数用户是从本应用点一台车机去连，而不是等车机来找。 */
                    val autoConnect:Boolean=true,
@@ -64,8 +67,15 @@ data class Options(val appearance:Appearance=Appearance.SYSTEM,val color:Int=DEF
                     *  "建音频流会弄停画面"，真实原因是 `d5b7a4f` 把"关掉我们自己的虚拟屏"挪到了
                     * `prepareCast` 之后：两块 VirtualDisplay 同时挂一块 surface，CarWith 那边就
                     * 一帧都不再合成。改回"先关再交"（`660d2ba`）之后，画面正常的同时音频
-                    * SETUP 也能全部 200。所以这个开关现在只是"这一版要不要测声音"的意思。 */
-                   val audioEnabled:Boolean=false,
+                    * SETUP 也能全部 200。
+                    *
+                    * 现在它是**正常功能开关**，不再是"这一版要不要测声音"。而且关掉的代价
+                    * 不是"不测声音"——[AirSession] 在它为 false 时**直接抛异常、跳过整条
+                    * MFi/SAP 音频流**，表现就是车机里音乐和导航全哑。所以默认必须是开，
+                    * 也不再暴露成能误触的界面开关。
+                    *
+                    * 老版本把 false 落过盘的用户由 [DefaultOnSettingsMigration] 一次性提升。 */
+                   val audioEnabled:Boolean=true,
                    /** 诊断开关：音频建立后向车机发 `SET_PARAMETER volume`。
                     *
                     *  AirPlay 的收端音量是**发送方**设的（dB，-144 约等于静音）。如果车机在收到
@@ -161,9 +171,12 @@ object BridgeStore {
         // 放在这里而不是每次读时算，是因为它要访问 ContentResolver，不该在 UI 每帧调用。
         Options.resolvedDeviceName=Options.localDeviceName(context)
         val p=context.getSharedPreferences("options",Context.MODE_PRIVATE)
-        // Upgrade in place: obsolete diagnostics cannot keep speech muted or
-        // override capability negotiation. Leave every unrelated setting intact.
+        // 下面两行都必须在**读**选项之前跑，否则读到的还是旧盘上的值。
+        //
+        // 顺序有讲究：先把已退休的诊断键清掉，再把该开的开关一次性提升为开。
+        // 两步都是幂等的，重复启动不会反复改写用户的存量设置。
         RetiredAudioSettingsMigration.removeFrom(p.edit()).apply()
+        DefaultOnSettingsMigration.applyTo(p)
         val default = Options()
         // phoneMac 在**读**的时候也要 uppercase（不只是写的时候）。
         //

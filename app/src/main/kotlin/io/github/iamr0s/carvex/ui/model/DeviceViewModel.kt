@@ -230,32 +230,9 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(settings = it.settings.copy(phoneMac = mac)) }
     }
 
-    fun updateExperimentalAuth(enabled: Boolean) {
-        if (enabled == _state.value.settings.experimentalAuth) return
-        BridgeStore.configure(BridgeStore.options.value.copy(experiment = enabled))
-        _state.update { it.copy(settings = it.settings.copy(experimentalAuth = enabled)) }
-    }
-
-    /** 静帧重发。开关直接落到会话选项里，下一次连接生效（不打断当前会话）。 */
-    fun updateFrontSurface(enabled: Boolean) {
-        if (enabled == _state.value.settings.frontSurface) return
-        BridgeStore.configure(BridgeStore.options.value.copy(frontSurface = enabled))
-        _state.update { it.copy(settings = it.settings.copy(frontSurface = enabled)) }
-    }
-
-    /** 音频投送。打开才建立 CarPlay 音频流（默认关）。改动下一次连接生效。 */
-    fun updateAudioEnabled(enabled: Boolean) {
-        if (enabled == _state.value.settings.audioEnabled) return
-        BridgeStore.configure(BridgeStore.options.value.copy(audioEnabled = enabled))
-        _state.update { it.copy(settings = it.settings.copy(audioEnabled = enabled)) }
-    }
-
-    /** MFi/SAP 音频明文直发（诊断用）。默认关，改动下一次连接生效。 */
-    fun updateAudioPlaintext(enabled: Boolean) {
-        if (enabled == _state.value.settings.audioPlaintext) return
-        BridgeStore.configure(BridgeStore.options.value.copy(audioPlaintext = enabled))
-        _state.update { it.copy(settings = it.settings.copy(audioPlaintext = enabled)) }
-    }
+    // 实验认证 / 静帧重发 / 音频投送 / 音频明文 的 update 方法随界面开关一起删除了。
+    // 这四个现在由 Options 的默认值（以及存量用户的一次性迁移）决定，
+    // 需要临时改只走 AudioDebugReceiver 广播或 run-as 改 options.xml。
 
     fun readPhoneMacWithShizuku() {
         viewModelScope.launch {
@@ -316,10 +293,6 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         deviceName = prefs.getString("name", null)?.takeIf{it.isNotBlank()}
             ?: io.github.iamr0s.carvex.sessioncore.Options.localDeviceName(appContext),
         phoneMac = BridgeStore.options.value.phoneMac,
-        experimentalAuth = BridgeStore.options.value.experiment,
-        frontSurface = BridgeStore.options.value.frontSurface,
-        audioPlaintext = BridgeStore.options.value.audioPlaintext,
-        audioEnabled = BridgeStore.options.value.audioEnabled,
         autoReconnect = prefs.getBoolean("auto", true),
         connectOnLaunch = prefs.getBoolean("launch", false),
         keepScreenOn = prefs.getBoolean("awake", true),

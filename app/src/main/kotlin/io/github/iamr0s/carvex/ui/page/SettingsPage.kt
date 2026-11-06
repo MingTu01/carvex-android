@@ -130,35 +130,10 @@ fun SettingsPage(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 ) { Text(stringResource(R.string.read_phone_mac)) }
             }
-            SwitchRow(stringResource(R.string.experimental_auth), s.experimentalAuth, vm::updateExperimentalAuth)
-            Text(
-                stringResource(R.string.experimental_auth_supporting),
-                style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-            // 这两个开关直接决定实车现象，改完要重新连一次才生效。
-            SwitchRow(stringResource(R.string.settings_front_surface), s.frontSurface, vm::updateFrontSurface)
-            Text(
-                stringResource(R.string.settings_front_surface_supporting),
-                style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-            SwitchRow(stringResource(R.string.settings_audio_enabled), s.audioEnabled, vm::updateAudioEnabled)
-            Text(
-                stringResource(R.string.settings_audio_enabled_supporting),
-                style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-            SwitchRow(stringResource(R.string.settings_audio_plaintext), s.audioPlaintext, vm::updateAudioPlaintext)
-            Text(
-                stringResource(R.string.settings_audio_plaintext_supporting),
-                style = MaterialTheme.typography.bodySmall,
-                color = cs.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
+            // 实验认证、静帧重发、音频投送、音频明文这四个开关已经从界面上去掉：
+            // 前两个是"必须开"，第三个是这个版本的正常功能，第四个只是排查密文问题的一次性诊断。
+            // 摆在这里的结果要么是用户误关后没声音没画面，要么是没人知道它干什么。
+            // 对应 Options 的默认值已改为开；存量用户由 DefaultOnSettingsMigration 一次性提升。
             // 通知使用权：车机显示歌名/歌手的数据来源。系统不允许应用自行申请，只能跳设置。
             ListItem(
                 headlineContent = { Text(stringResource(R.string.settings_notif_access)) },
@@ -179,7 +154,6 @@ fun SettingsPage(
                     }
                 },
             )
-            Text(stringResource(R.string.airplay_security_automatic), modifier = Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall)
             SwitchRow(stringResource(R.string.settings_auto_reconnect), s.autoReconnect) { v ->
                 vm.updateSettings("auto_reconnect=$v") { it.copy(autoReconnect = v) }
             }
