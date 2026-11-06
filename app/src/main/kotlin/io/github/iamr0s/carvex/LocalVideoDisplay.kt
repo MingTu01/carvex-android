@@ -2,14 +2,17 @@ package io.github.iamr0s.carvex
 import android.app.Presentation
 import android.content.Context
 import android.graphics.BitmapFactory
+import android.graphics.SurfaceTexture
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.MediaPlayer
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Display
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.TextureView
 import android.view.ViewGroup
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -28,6 +31,7 @@ import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
@@ -45,6 +49,7 @@ import io.github.iamr0s.carvex.session.LocalVideoContentFactory
 import io.github.iamr0s.carvex.session.LocalVideoPhase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.util.concurrent.CountDownLatch
 
 /** Private own-content display fed by Compose, matching the reference implementation:
@@ -53,7 +58,14 @@ import java.util.concurrent.CountDownLatch
 object LocalVideoDisplay:LocalVideoContentFactory {
     /** Diagnostics go to the session log stream: without them a refused virtual display looks
      * exactly like one that was created but never produces a frame. */
-    internal fun note(message:String)=BridgeStore.log(BridgeStore.state.value.id,"Local display: "+message)
+    internal fun note(message:String){
+        val line="Local display: "+message
+        BridgeStore.log(BridgeStore.state.value.id,line)
+        // 同时打一份到 logcat。这些诊断只有连车时才用得上，而连车时手边唯一能看的就是
+        // `adb logcat`；只走 BridgeStore 的那份要等会话结束才导得出，黑屏当场没法判断。
+        // 量很小：每会话几条，心跳不走这里。
+        android.util.Log.i("CarVexDisplay",line)
+    }
     override suspend fun open(context:Context,surface:Surface,width:Int,height:Int,fps:Int):LocalVideoContent? =
         withContext(Dispatchers.Main) {
             if(width<=0||height<=0||!surface.isValid){
@@ -166,7 +178,7 @@ private class BridgePresentation(context:Context,display:Display,private val bra
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
             setContent{
                 when(phase.value){
-                    LocalVideoPhase.SPLASH->BrandPage(brand,"正在建立投屏通道")
+                    LocalVideoPhase.SPLASH->SplashPage(brand)
                     LocalVideoPhase.SCREEN->LocalScreenPage(brand)
                 }
             }
@@ -179,6 +191,102 @@ private class BridgePresentation(context:Context,display:Display,private val bra
         registry.currentState=Lifecycle.State.DESTROYED;viewModelStore.clear()
         super.onStop()
     }
+}
+
+/** 启动页：先放 `assets/splash.mp4`，放不出来就退回原来的品牌页。
+ *
+ *  为什么是 TextureView 而不是 SurfaceView：这块画面是画进 VirtualDisplay、再由编码器读走的。
+ *  SurfaceView 会自开一个合成层，走私有显示时经常整块黑；TextureView 走普通视图合成，
+ *  和 Compose 画在同一层上，编码器才看得到。
+ *
+ *  音频恒静音：片源里确实带一条 AAC 轨，但这是车机上的开机画面，不该在车里突然响一声。
+ *
+ *  失败一律退回品牌页，不抛也不报会话失败：启动画面是给人看的，不是协议的一部分。 */
+@Composable private fun SplashPage(brand:String){
+    val context=LocalContext.current
+    var fallback by remember{ mutableStateOf(false) }
+    if(fallback){
+        BrandPage(brand,"正在建立投屏通道")
+        return
+    }
+    val video=remember{SplashVideo()}
+    DisposableEffect(video){ onDispose{ video.release() } }
+    Box(Modifier.fillMaxSize().background(Color.Black)){
+        AndroidView(
+            modifier=Modifier.fillMaxSize(),
+            factory={viewContext->TextureView(viewContext).apply{
+                surfaceTextureListener=object:TextureView.SurfaceTextureListener{
+                    override fun onSurfaceTextureAvailable(texture:SurfaceTexture,width:Int,height:Int){
+                        val started=video.attach(viewContext.applicationContext,texture){fallback=true}
+                        if(!started)fallback=true
+                    }
+                    override fun onSurfaceTextureSizeChanged(texture:SurfaceTexture,width:Int,height:Int)=Unit
+                    override fun onSurfaceTextureDestroyed(texture:SurfaceTexture):Boolean{
+                        video.release();return true
+                    }
+                    override fun onSurfaceTextureUpdated(texture:SurfaceTexture)=Unit
+                }
+            }}
+        )
+    }
+}
+
+/** `assets/splash.mp4` 的播放器。一个实例对应一次启动页显示，close 后释放。
+ *
+ *  这是唯一会往编码器送运动画面的地方：其余两页都是静态 Compose，靠心跳每秒重画一次，
+ *  视频自己每帧都在更新，心跳对它没有意义。 */
+private class SplashVideo{
+    private var player:MediaPlayer?=null
+    /** 返回 false 表示这段视频放不了，调用方应当退回静态页。 */
+    fun attach(context:Context,texture:SurfaceTexture,onFailed:()->Unit):Boolean{
+        release()
+        val file=prepareFile(context)?:return false
+        return try{
+            val mp=MediaPlayer()
+            player=mp
+            mp.setDataSource(file.absolutePath)
+            mp.setSurface(Surface(texture))
+            mp.isLooping=true
+            mp.setVolume(0f,0f)
+            mp.setOnPreparedListener{prepared->
+                LocalVideoDisplay.note("splash video playing ${file.length()}B ${prepared.videoWidth}x${prepared.videoHeight}")
+                prepared.start()
+            }
+            mp.setOnErrorListener{_,what,extra->
+                // 解不出来就退回静态页：宁可见不到视频，也不要给车机留一块黑屏。
+                LocalVideoDisplay.note("splash video failed what=$what extra=$extra")
+                onFailed();release();true
+            }
+            mp.prepareAsync()
+            true
+        }catch(t:Throwable){
+            LocalVideoDisplay.note("splash video rejected: "+t.javaClass.simpleName+" "+(t.message?:""))
+            release();false
+        }
+    }
+    fun release(){
+        val mp=player?:return
+        player=null
+        runCatching{mp.reset()}
+        runCatching{mp.release()}
+    }
+    /** 拷到 cache 再播，不走 openFd。
+     *
+     *  `openFd` 只对**未压缩**的资产成立，而资产是否被压缩取决于打包配置——一旦哪天被压缩，
+     *  启动画面就会在车上变黑，且只在车上才看得出来。多拷一次 1.6MB 换掉这个隐患值得。
+     *  文件名带 versionCode，升级后旧文件不会顶替新片源。 */
+    private fun prepareFile(context:Context):File?{
+        val target=File(context.cacheDir,"splash-"+BuildConfig.VERSION_CODE+".mp4")
+        if(target.isFile&&target.length()>0L)return target
+        return try{
+            context.assets.open(ASSET).use{input->target.outputStream().use{input.copyTo(it)}}
+            target
+        }catch(t:Throwable){
+            LocalVideoDisplay.note("splash video missing: "+t.javaClass.simpleName+" "+(t.message?:""))
+            null
+        }
+    }
+    private companion object{const val ASSET="splash.mp4"}
 }
 
 @Composable private fun BrandPage(name:String,caption:String){
