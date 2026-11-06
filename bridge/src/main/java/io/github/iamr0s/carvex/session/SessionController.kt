@@ -85,13 +85,15 @@ class SessionController(
         context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
             .putLong(KEY_NO_SYN_AT,System.currentTimeMillis()).apply()
     }
-    /** 车机上一次"把我们拒掉"的时刻（iAP 链路那一段）。见 [CAR_QUIET_MS]。
-     *  必须落盘：真机上进程在每次尝试之间就会被 CarWith 杀掉，内存里的标记下一轮读不到。 */
+    /** 车机上一次"把我们拒掉"的时刻。**当前没有消费者**：安静期方案（2026-11-06 20067）
+     *  实测把断连→出流从 49 秒拖到 77.6 秒，已被撤掉（20068）。
+     *  保留写入是因为它同步落盘，正好能在"failure 与 SIGKILL 只隔 1 毫秒"的场景里活下来，
+     *  以后要做"重试节流"时直接读它即可。见 [markCarBusy]。 */
     private fun carBusyAt():Long=
         context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).getLong(KEY_CAR_BUSY_AT,0L)
     private fun markCarBusy(){
         // 必须 commit() 同步落盘：真车 2026-11-05 00:04:31 那一轮，failure 写进日志与 SIGKILL
-        // 只隔 1 毫秒，apply() 的异步写根本来不及，下一轮读不到标记就白等了。
+        // 只隔 1 毫秒，apply() 的异步写根本来不及，下一轮读不到标记。
         runCatching{
             context.getSharedPreferences(PREFS_SESSION,Context.MODE_PRIVATE).edit()
                 .putLong(KEY_CAR_BUSY_AT,System.currentTimeMillis()).commit()
@@ -230,21 +232,6 @@ class SessionController(
     private fun reject(s:String){val id=BridgeStore.begin(0);BridgeStore.update(id){it.copy(stage=Stage.FAILED,detail=s,error=s)};BridgeStore.log(id,s)}
     private suspend fun attempt(id:String,o:Options,fromHost:Boolean,refreshSdp:Boolean=false,
                                 lease:CarNetworkLease?=null):Unit=withContext(Dispatchers.IO) {
-        // 车机刚拒掉过一轮就走这条路：先安静等它放开，再去碰它。
-        // 2026-11-05 两次手机侧断连都对得上：最后一次探测在 30.3 / 58.2，车机肯应答分别在
-        // 50.3 和下一分钟的 20.5 —— 都晚了约 20 秒。这段时间里探得越勤只是让 CarWith 多杀
-        // 我们一次，车机不会因此更早准备好（那两轮各白跑一次，还吃了一次 EOF 断开）。
-        run{
-            val at=carBusyAt()
-            if(at!=0L){
-                val quiet=at+CAR_QUIET_MS-System.currentTimeMillis()
-                if(quiet>0L){
-                    BridgeStore.log(id,"the car turned us down "+(System.currentTimeMillis()-at)+
-                        "ms ago; staying quiet another "+quiet+"ms before touching it again")
-                    delay(quiet)
-                }
-            }
-        }
         val r=Resources{trace->
             BridgeStore.log(id,"Resource close type="+trace.type+" elapsedMs="+trace.elapsedMs+" error="+trace.error)
         }
@@ -1263,8 +1250,9 @@ class SessionController(
             val firstFrameDeadline=video?.let{timer.schedule({if(frames.get()==0L)failure(java.net.SocketTimeoutException("No video frame written"))},15000,TimeUnit.MILLISECONDS)}
             try{throw failed.await()}finally{firstFrameDeadline?.cancel(false)}
         } finally {
+            // 记下"车机最后一次把我们拒在 iAP 链路"的时刻，供以后做重试节流用（当前无消费者）。
             // 必须在 cleanup 之前落盘：cleanup 里的 unbind/stopCast 会让 CarWith 立刻杀掉我们，
-            // 真车实测那个间隔只有 1 毫秒。落在 onFailure 里永远太晚——那时候 unbind 已经发出去了。
+            // 真车实测那个间隔只有 1 毫秒，落在 onFailure 里永远太晚——那时 unbind 已经发出去了。
             if(BridgeStore.state.value.stage==Stage.DETECT)markCarBusy()
             ended.set(true);voiceToggle.close();startAudio.set(null);startSpeech.set(null);audioDemand.close();metrics.cancel(false);applyDynamicFps=null;applyBitrate=null;sendKey=null;carPlayAudioTestJob?.cancel();carPlayAudioTestJob=null;carWithAudioProbeJob?.cancel();carWithAudioProbeJob=null
             phoneNowPlaying?.stop();phoneNowPlaying=null
@@ -1434,8 +1422,5 @@ class SessionController(
 private const val PREFS_SESSION="session"
 private const val KEY_NO_SYN_AT="no_syn_at"
 private const val KEY_CAR_BUSY_AT="car_busy_at"
-/** 车机拒掉一轮 iAP 之后需要的安静期。真车两次实测都是约 20 秒（见 [KEY_CAR_BUSY_AT] 的用法），
- *  取同一个值：比它更短等于白跑一轮，更长则白等。 */
-private const val CAR_QUIET_MS=20_000L
 /** NO_SYN 之后多久之内认为"缓存通道号仍然可疑"。 */
 private const val NO_SYN_REFRESH_WINDOW_MS=10*60_000L
