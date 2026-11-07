@@ -1049,7 +1049,7 @@ class SessionController(
                     "write-ms"->writeMs.updateAndGet{maxOf(it,value)}
                     // Logged once per session: one line proves the heartbeat runs, while a line per
                     // second of a still picture would bury everything else.
-                    "idle-repeat"->if(idleRepeats.getAndIncrement()==0L)BridgeStore.log(id,"still picture: encoder has no output, resending the last frame every second to keep the media stream alive")
+                    "idle-repeat"->if(idleRepeats.getAndIncrement()==0L)BridgeStore.log(id,"still picture: no frame for ${VideoEncoder.IDLE_STILL_AFTER_MS}ms, so the last frame is resent to keep the video timeline level with audio; after that once a second while it stays still")
                     "idle-repeat-failed"->if(idleRepeatFailures.getAndIncrement()==0L)BridgeStore.log(id,"still-picture resend failed: the frame source cannot resubmit the current frame")
                     "front-surface-on"->BridgeStore.log(id,"encoder front surface established; it resends P frames for still pictures")
                     "front-surface-off"->BridgeStore.log(id,"encoder front surface not established; frame source feeds the encoder directly")
@@ -1058,8 +1058,10 @@ class SessionController(
                     "front-source"->BridgeStore.log(id,"encoder front surface received "+value+" frame(s) from the picture source; this counts what the host actually drew, repeats excluded")
                     else->VideoDiagnosticLog.message(name,value)?.let{BridgeStore.log(id,it)}
                 }},stopSend={air.closeVideo()},
-                    // Opt-in latency trade: the front surface is the only way a still CarWith picture
-                    // gets a P frame, and it costs a blit per frame plus a few frames of latency.
+                    // 前置画布是静止画面重新进编码器的**唯一**通道：宿主的画面我们重画不了，
+                    // 只能把它的最后一帧再 blit 一次。代价是每帧多一次全屏 blit、多一跳缓冲，
+                    // 换来的是静止期间视频时间戳不掉队（否则恢复时就是一次 A/V 追帧的卡顿）。
+                    // 默认开；补帧本身是自适应的，画面在动的时候这条路根本不触发。
                     frontSurface=o.frontSurface&&hostOwnsDisplay)
                 val v=r.own(makeEncoder(fps));video=v
                 BridgeStore.log(id,"${"AVC selected name="}${v.encoderName}${" hardware="}${v.hardwareAccelerated}${" size="}${hostWidth}${"x"}${hostHeight}${" fps="}${fps}${" bitrate="}${v.initialBitrate}")
@@ -1090,7 +1092,9 @@ class SessionController(
                     // The host renders into whatever surface it is handed and never repaints on its own,
                     // so it renders into the encoder's front surface: that is the only way a still host
                     // picture gets back into the encoder.
-                    BridgeStore.log(id,if(o.frontSurface)"CarWith host owns the frame source; still pictures are resent via the encoder front surface" else "CarWith host owns the frame source; front surface disabled, so no P frames while still (latency first)")
+                    BridgeStore.log(id,if(o.frontSurface)
+                        "CarWith host owns the frame source; still pictures are resent through the encoder front surface once the picture has been still for ${VideoEncoder.IDLE_STILL_AFTER_MS}ms (adaptive; a moving picture never pays for it)"
+                    else "CarWith host owns the frame source; front surface disabled, so no P frames while still and the video timeline falls behind audio during a pause (latency first)")
                     // 顺序：先放掉我们自己的虚拟屏，**再**把 surface 交给宿主。
                     // 实车对照（2026-11-02）：旧代码就是这个顺序（close → prepareCast），
                     // 画面正常、video 一路涨到 18312；改成"先 prepareCast、等 onCastPrepared 再 close"

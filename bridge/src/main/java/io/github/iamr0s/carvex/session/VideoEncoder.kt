@@ -19,14 +19,31 @@ class VideoEncoder(val width:Int,val height:Int,fps:Int,bitrate:Int,hostFormat:B
     private val failure:(Throwable)->Unit,private val diagnostic:(String,Long)->Unit={_,_->},
     private val stopSend:()->Unit={},
     /** Builds the GPU front surface. It is the only way a still picture gets back into the encoder
-     *  when the source is not ours to repaint, but it costs a full-screen blit per frame and adds
-     *  three to four frames of latency, so it is opt-in and off by default. */
+     *  when the source is not ours to repaint. It costs a full-screen blit per frame and one extra
+     *  buffer hop, which is why it is a switch at all - but the default is on, because a video
+     *  timeline that stands still while audio keeps advancing comes back as an A/V offset the
+     *  receiver has to reconcile by dropping frames. See [IDLE_STILL_AFTER_MS] for the cadence. */
     private val frontSurface:Boolean):AutoCloseable {
     companion object {
-        /** Cadence of the still-picture media heartbeat. A picture can stay still for a long time,
-         *  and the silence that follows is what a receiver reports as a lost video, so one repeat a
-         *  second keeps packets flowing at the cost of a single tiny P frame. */
+        /** Cadence of the still-picture media heartbeat once the picture is known to be still.
+         *  A picture can stay still for a long time, and the silence that follows is what a
+         *  receiver reports as a lost video, so one repeat a second keeps packets flowing at the
+         *  cost of a single tiny P frame. */
         const val IDLE_REPEAT_INTERVAL_MS=1_000L
+        /** 静默多久就认定画面停了。
+         *
+         *  比 [IDLE_REPEAT_INTERVAL_MS] 短是**故意的**：补帧的意义不只是"别让流看起来断了"，
+         *  更是"别让视频时间戳掉队"。静止期间音频的 RTP 时间戳一直在往前走，视频这边要是
+         *  整秒不动，恢复播放时接收端面对的就是一个已经攒下来的 A/V 偏差，只能靠丢帧追回来
+         *  —— 表现就是画面一动先卡一下。半个秒够区分"一次短暂的停顿"和"真的停住了"：
+         *  30 fps 的正常出帧间隔是 33 ms，任何小于 500 ms 的空档都不会触发补帧。 */
+        const val IDLE_STILL_AFTER_MS=500L
+        /** 心跳检查周期。
+         *
+         *  必须明显短于 [IDLE_STILL_AFTER_MS]，否则 500 ms 这个阈值根本落不到地——定时器只有
+         *  每秒才醒一次，最早也只能在 1 s 补帧。这次检查只是读两个 Long 做比较，不开线程、
+         *  不分配对象，四次每秒的代价可以忽略。 */
+        const val IDLE_TICK_MS=250L
         private data class Candidate(val info:MediaCodecInfo,val caps:MediaCodecInfo.CodecCapabilities)
         private fun candidates(hostFormat:Bundle?):List<Candidate> {
             return MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
@@ -102,7 +119,7 @@ class VideoEncoder(val width:Int,val height:Int,fps:Int,bitrate:Int,hostFormat:B
      *  latency, which is the trade made here - bursts are tolerated, and a backlog that persists is
      *  paid for in delay. */
     private val queue=Channel<Packet>(12)
-    private val heartbeat=VideoIdleHeartbeat(IDLE_REPEAT_INTERVAL_MS)
+    private val heartbeat=VideoIdleHeartbeat(IDLE_REPEAT_INTERVAL_MS,IDLE_STILL_AFTER_MS)
     /** Resubmits the current picture while the encoder is quiet, for a source that can repaint on
      *  request. With no front surface built, this is the only repeat available. */
     @Volatile var repeatFrame:(()->Unit)?=null
@@ -195,9 +212,13 @@ class VideoEncoder(val width:Int,val height:Int,fps:Int,bitrate:Int,hostFormat:B
                     }
                 }else stallStarted=0L
             },500,500,TimeUnit.MILLISECONDS)
-            // Still-picture heartbeat, on a fixed rate so the packet gap cannot drift with the
+            // Still-picture heartbeat, on a fixed tick so the packet gap cannot drift with the
             // encoder output. The repeat itself is cheap: the picture did not change, so the codec
             // codes it as a skip P frame.
+            //
+            // 周期是 IDLE_TICK_MS 而不是补帧间隔：阈值定在 500 ms，定时器就得比它醒得更勤，
+            // 否则最早的补帧也只能落在一秒后，阈值等于没写。真正决定节奏的是 heartbeat.beat()，
+            // 这里只负责按时去问一句。
             timer.scheduleAtFixedRate({
                 // Nothing to repeat means no heartbeat to run: reporting one would claim work that
                 // nobody performs.
@@ -205,7 +226,7 @@ class VideoEncoder(val width:Int,val height:Int,fps:Int,bitrate:Int,hostFormat:B
                     // A refused repeat must not cancel the timer task itself.
                     runCatching{diagnostic("idle-repeat",1);repeatPicture()}.onFailure{runCatching{diagnostic("idle-repeat-failed",1)}}
                 }
-            },IDLE_REPEAT_INTERVAL_MS,IDLE_REPEAT_INTERVAL_MS,TimeUnit.MILLISECONDS)
+            },IDLE_TICK_MS,IDLE_TICK_MS,TimeUnit.MILLISECONDS)
         }
         consumer=scope.launch {
             // Queue latency remains controlled by backpressure. The gate here is solely the

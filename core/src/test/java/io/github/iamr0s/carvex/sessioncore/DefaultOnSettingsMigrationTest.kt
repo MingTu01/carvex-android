@@ -82,5 +82,32 @@ class DefaultOnSettingsMigrationTest {
         val defaults = Options()
         assertTrue("audioEnabled 默认必须为开，否则车机没声音", defaults.audioEnabled)
         assertTrue("experiment 默认必须为开，否则会话建不起来", defaults.experiment)
+        assertTrue("frontSurface 默认必须为开，否则静止画面掉出视频时间线", defaults.frontSurface)
+    }
+
+    /** 已经跑过第 1 步的设备：闸门不能再挡着第 2 步，否则新加的默认开永远发不到老用户手上。 */
+    @Test fun aDeviceThatOnlyRanStepOneStillReceivesStepTwo() {
+        val store = Store(mapOf(
+            "defaultsRevision" to 1,
+            "audioEnabled" to true, "experiment" to true, "frontSurface" to false,
+        ))
+        assertTrue(DefaultOnSettingsMigration.applyTo(store.prefs))
+        assertEquals(mapOf(
+            "defaultsRevision" to DefaultOnSettingsMigration.REVISION,
+            "audioEnabled" to true, "experiment" to true, "frontSurface" to true,
+        ), store.values)
+    }
+
+    /** 第 1 步跑完之后用户手工关掉的键，不能被第 2 步顺手又打开 —— 各步只碰各自的键。 */
+    @Test fun aLaterStepDoesNotTouchAnEarlierStepsKeys() {
+        val store = Store(mapOf(
+            "defaultsRevision" to 1,
+            "audioEnabled" to false, "experiment" to false,
+        ))
+        assertTrue(DefaultOnSettingsMigration.applyTo(store.prefs))
+        assertEquals(mapOf(
+            "defaultsRevision" to DefaultOnSettingsMigration.REVISION,
+            "audioEnabled" to false, "experiment" to false,
+        ), store.values)
     }
 }

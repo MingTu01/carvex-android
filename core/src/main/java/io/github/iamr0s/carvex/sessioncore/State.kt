@@ -52,7 +52,22 @@ data class Options(val appearance:Appearance=Appearance.SYSTEM,val color:Int=DEF
                    // 实验认证 = iAP 隧道 + MFi 校验 + 认证后才允许的 bootstrap。
                    // 实车跑通靠的就是这条路，关掉它整个会话建立不起来，所以默认开、
                    // 也不再给界面开关 —— 留一个一按就没声音没画面的按钮没有意义。
-                   val experiment:Boolean=true,val deviceName:String="",val bindNetwork:Boolean=true,val frontSurface:Boolean=false,
+                   val experiment:Boolean=true,val deviceName:String="",val bindNetwork:Boolean=true,
+                   /** 「静态画面补帧」：是否在编码器前面架一层 EGL 前置画布。
+                    *
+                    * 这一层是**唯一**能让静止画面重新进到编码器里的办法：宿主的画面不是我们能
+                    * 重画的，只能把它的最后一帧从画布上再 blit 一次，编码器才会吐出一个
+                    * skip P 帧。没有它，画面一停，视频时间戳也停 —— 而音频时间戳还在走，
+                    * 恢复时接收端就得靠丢帧追回这段 A/V 偏差，用户看到的就是"一动先卡一下"。
+                    *
+                    * 代价是每帧多一次全屏 blit、多一跳缓冲，实测增加约一帧延迟。默认开：
+                    * 卡顿比这点延迟更显眼。真嫌手感钝，把这个默认值改回 false 重新打包即可
+                    * （release 包 run-as 进不去，改不了盘上的值）；[DefaultOnSettingsMigration]
+                    * 只搬一次，不会把手工改回去的值再翻上来。
+                    *
+                    * 补帧节奏是自适应的（`VideoEncoder.IDLE_STILL_AFTER_MS`）：静止 500 ms
+                    * 补第一帧，之后每秒一帧续命，画面一动立刻停，正常出帧的路径完全不受影响。 */
+                   val frontSurface:Boolean=true,
                    /** 「主动连接」：本端主动发起（关掉 = 只做被连接方，等价于原来的 listen=true）。
                     *  默认开：绝大多数用户是从本应用点一台车机去连，而不是等车机来找。 */
                    val autoConnect:Boolean=true,
@@ -176,7 +191,12 @@ object BridgeStore {
         // 顺序有讲究：先把已退休的诊断键清掉，再把该开的开关一次性提升为开。
         // 两步都是幂等的，重复启动不会反复改写用户的存量设置。
         RetiredAudioSettingsMigration.removeFrom(p.edit()).apply()
-        DefaultOnSettingsMigration.applyTo(p)
+        if(DefaultOnSettingsMigration.applyTo(p)){
+            // 一次性提升的结果必须留下痕迹。否则"装完新版本还是老行为"这件事只能靠猜盘上的值，
+            // 而 release 包 run-as 进不去 —— 那正是上一次多花一整轮排查的原因。
+            android.util.Log.i("CarVex","defaults migration applied: promoted switches are now on (revision="+
+                DefaultOnSettingsMigration.REVISION+")")
+        }
         val default = Options()
         // phoneMac 在**读**的时候也要 uppercase（不只是写的时候）。
         //
