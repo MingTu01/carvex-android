@@ -13,7 +13,25 @@ object CarPlayAudioPlan {
     val mediaLowLatency=Route(1,100,"media")
     val alert=Route(2,100,"alert")
     val alternate=Route(2,101,"default")
+    /** 导航的备用落点：`101/compatibility`。
+     *
+     *  实车 `/info`（session 0fbfe122）广告了 `type=101/compatibility 可收[PCM16/48000/2]`
+     *  和 `type=101/default 可收[PCM16/48000/2 AAC_ELD/48000/2]` —— 同一个 type 下的两个
+     *  purpose，是两个独立的会话位。
+     *
+     *  为什么要它：车机音量是媒体/导航/语音三路，但 `type 100` 上只能同时存在一条流
+     *  （实测两次：主音频落住后 `100/speechRecognition` 一律 400，`100/alert` 也被顶掉；
+     *  而且**触屏会跟着失灵**）。于是三条声音里最多只有两条能各自有流。
+     *  `type 101` 的另一个 purpose 就是第三条流的唯一空位。 */
+    val alternateCompat=Route(2,101,"compatibility")
     val assistant=Route(3,100,"speechRecognition")
+    /** 语音在**分离模式**下的落点：`101/compatibility`。
+     *
+     *  为什么把语音放这里、而不是继续放 `101/default`：`101/default` 是三条路里唯一被实车
+     *  证明过能出声的非 100 路由（1.0.83 会话里导航在它上面发了 3204 个包），而语音换到哪条
+     *  路上都是 400。**能用的不动，把从来没响过的那一路挪到空位** —— 万一 `compatibility`
+     *  这个 purpose 建不起来，损失的是本来就听不到的语音，不是现在正常的导航。 */
+    val speechCompat=Route(3,101,"compatibility")
     /** 语音的**第二个**落点：`101/default`。
      *
      *  2026-11-03 真车 `/info`（session `9829c6ba`）广告了 `#7 streamType=101 audioType=default
@@ -25,7 +43,7 @@ object CarPlayAudioPlan {
      *  而主音频 PCM 48k/2 一直占着它。于是 `100/speechRecognition` 的再 SETUP 一律 400 ——
      *  语音永远起不来。`type 101` 是**独立上下文**，把语音挪过去就不跟主音频抢。 */
     val speechAlternate=Route(3,101,"default")
-    val routes=listOf(media,mediaLowLatency,alert,alternate,assistant,speechAlternate)
+    val routes=listOf(media,mediaLowLatency,alert,alternate,alternateCompat,assistant,speechAlternate,speechCompat)
     private fun f(bit:Long,codec:Codec,rate:Int,channels:Int,frames:Int)=Format(bit,codec,rate,channels,frames)
     val formats:List<Format> = buildList {
         val pcm=listOf(0x4L to 8000,0x10L to 16000,0x40L to 24000,0x100L to 32000,0x400L to 44100,0x4000L to 48000)
@@ -154,8 +172,12 @@ object CarPlayAudioPlan {
         supportsEncoded:(Format)->Boolean):Selection? {
         val choices=when(category){
             1->listOf(media,mediaLowLatency)
-            2->listOf(alert,alternate)
-            3->listOf(assistant,speechAlternate)
+            // 分离模式给导航补上 `101/compatibility` 这个备位，但它排在 `101/default` **之后**：
+            // default 是实车证明过能出声的那一条，不能为了多一个位置把它降级。
+            2->if(separateLanes)listOf(alternate,alternateCompat,alert) else listOf(alert,alternate)
+            // 分离模式语音只走 `101/compatibility`。`100/speechRecognition` 由调用点恒定排除
+            // （见 [speechPlaybackExclusions]），`101/default` 这时归导航。
+            3->if(separateLanes)listOf(speechCompat,speechAlternate) else listOf(assistant,speechAlternate)
             else->throw IllegalArgumentException()
         }
         // PCM 优先：只在车机真的广告了可发的 PCM16 时生效，否则无声退回下面的压缩选择。
@@ -164,18 +186,18 @@ object CarPlayAudioPlan {
         // `mediaLowLatency(100)`，与实车 20030 出声的配置逐字节一致。
         //
         // category 3 的 PCM 只走 `101/default`，**绝不**走 `100/speechRecognition`：
-        // 那会顶掉主音频的 type 100 上下文（20032 的代价）。
-        //
-        // 分离模式下这条约束换了个方向：媒体不再在 `type 100` 上建 PCM 上下文，于是
-        // `100/speechRecognition` 反而成了语音唯一"属于自己的"那条流。媒体若在 102 上
-        // 建不起来，下面的 choices 循环会自然落回 `100/media` 的 PCM，与关闭时行为一致。
+        // 那会顶掉主音频的 type 100 上下文（20032 的代价是触屏一起失灵）。
         val pcmRoutes=when(category){
-            1->if(preferPcm&&!separateLanes)listOf(mediaLowLatency) else emptyList()
-            2->if(preferPcm&&preferPcmAlert)listOf(alternate) else emptyList()
+            1->if(preferPcm)listOf(mediaLowLatency) else emptyList()
+            2->when{
+                separateLanes->listOf(alternate,alternateCompat)
+                preferPcm&&preferPcmAlert->listOf(alternate)
+                else->emptyList()
+            }
+            // 分离模式：语音的 PCM 只放 `101/compatibility`。这里**不**保留 `101/default` ——
+            // 它这时归导航，语音再去 SETUP 只会换一个 400，并且把日志搅浑。
             3->when{
-                // 两个落点都留着：先要自己的 `100/speechRecognition`，被 400 拒了就退回
-                // `101/default` 和导航共用一条 —— "分不开但有声"好过没声音。
-                separateLanes->listOf(assistant,speechAlternate)
+                separateLanes->listOf(speechCompat)
                 preferSpeechAlt->listOf(speechAlternate)
                 else->emptyList()
             }
@@ -187,24 +209,13 @@ object CarPlayAudioPlan {
             // `101/default` 是纯输出路由：本端从来给不出采集方向（A-44 的 SAP 输入密钥没有派生
             // 材料，`microphone not offered` 每次 SETUP 都会打），所以对它不要求 duplex ——
             // 这不是放松门禁，而是它本来就没有输入可以松。`assistant(100/…)` 仍然照旧要求。
-            val outputOnly=route==speechAlternate
+            val outputOnly=route==speechAlternate||route==speechCompat
             fun pcmInputSupported(format:Format)=outputOnly||!requireDuplex||(duplexSupported(entries,route,format)&&supportsCapture(format))
             val pcm=pcmCompatibility(entries,route,source)?.takeIf(::pcmInputSupported)
             if(pcm!=null)return Selection(route,pcm)
         }
-        // 分离模式：媒体在 `102/media` 上优先走 PCM。见 [pcmOnMedia102] 的说明 ——
-        // 用压缩编码要到的是一条"SETUP 能过、但永远等不到数据"的流。
-        //
-        // 反过来更重要：102 上没有 PCM 位时就**完全不要碰它**。CarWith 采的是 PCM，
-        // 压缩编码在它那儿等于要不到数据，选中了就是音乐变哑。宁可留在 100 上分不开，
-        // 也不能交出一条没有源的流。
-        val skipped=if(separateLanes&&category==1){
-            val pcm102=pcmOnMedia102(entries,source)
-            if(pcm102!=null&&media !in excludedRoutes)return Selection(media,pcm102)
-            excludedRoutes+media
-        }else excludedRoutes
         for(route in choices){
-            if(route in skipped)continue
+            if(route in excludedRoutes)continue
             // Do not globally disable an advertised codec here. The firmware selects
             // from the per-route capability mask; a local encoder intersection decides
             // whether that candidate survives. Device-specific isolation belongs in an
@@ -280,21 +291,23 @@ object CarPlayAudioPlan {
     fun wireSupported(route:Route,format:Format):Boolean {
         if(route !in routes||format !in formats)return false
         return when(format.codec){
+            // PCM 只在 type 100/101 上成立。type 102 实车只广告 `102/media 可收[AAC_LC/48000/2]`
+            // —— 一个 PCM 位都没有，而 CarWith 只会采 PCM，所以 102 上任何格式都拿不到数据
+            // （session 0fbfe122：SETUP 200、整场 0 个包）。这不是保守，是那条路本来就不通。
             Codec.PCM16->route.type in setOf(100,101)&&format.rate%200==0
             Codec.AAC_LC,Codec.AAC_ELD,Codec.OPUS->route.type in setOf(100,101,102)
         }
     }
-    /** 只给「三路分离」这一条实验路径用：`102/media` 上的 PCM。
+    /** 建**语音播放**流时恒定排除的路由。
      *
-     *  [wireSupported] 有意不收 type 102 的 PCM —— 那是从 100/101 的实测覆盖推出来的通用门禁，
-     *  不能为一个还没定论的实验去放宽它（放宽会连带改掉默认路径的行为）。但实车
-     *  （session `0fbfe122`）里媒体在 102 上只拿到 AAC_LC，SETUP 200，RTP 包里一个字节都没有：
-     *  CarWith 的 `music record` 采的是 PCM，它编码不了就不推。所以这里单独放行，
-     *  范围缩到"102 + PCM + 分离模式"这一种组合。 */
-    private fun pcmOnMedia102(entries:List<AudioCapabilities.Entry>,source:PcmFormat):Format? =
-        playbackFormats(entries,media).filter{it.codec==Codec.PCM16&&it.rate%200==0}
-            .sortedWith(compareBy<Format>({if(it.rate==source.rate)0 else 1},
-                {if(it.channels==source.channels)0 else 1},{-it.rate})).firstOrNull()
+     *  `100/speechRecognition` 是一条"SETUP 能成、声音也出得来、但代价是触屏"的路由：车机一旦
+     *  为它在 `type 100` 上让出过输入焦点就再也不还回来，表现是"用小爱导航之后触屏全死，只能
+     *  重启车机"。这个问题修过两次（2026-11-03 把语音改到 `101/default`，2026-11-07 又在分离
+     *  模式下踩回去），所以现在把"不许建"写成协议层的常量，而不是只靠调用点记得传。
+     *
+     *  注意这只约束**播放**方向：车机采集麦克风走的是 [pcmCaptureCandidates] / [captureCandidates]，
+     *  那是另一条 SETUP，不受这里影响。 */
+    fun speechPlaybackExclusions(refused:Set<Route>):Set<Route> = refused+assistant
     /** Local category map when no peer capability exists yet; runtime uses [selectPlayback]. */
     fun implementedRouteForCategory(category:Int):Route=when(category){
         1->mediaLowLatency

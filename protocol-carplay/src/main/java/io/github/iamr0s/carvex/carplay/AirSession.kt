@@ -140,6 +140,21 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         3->rejectedSpeechRoutes
         else->null
     }
+    /** 建语音**播放**流时永远排除那些"能建起来但代价是触屏"的路由。
+     *
+     *  `100/speechRecognition` 是这样的路由：SETUP 可能成功、声音也可能出来，但车机一旦为它在
+     *  type 100 上让出过输入焦点就再也不还回来 —— 表现为"用小爱导航之后触屏全死，只能重启车机"。
+     *  这个问题已经为它修过一次（当时是把语音改到 `101/default`），2026-11-07 又踩了一次：
+     *  日志里 `100/speechRecognition` 出现过之后，触屏随即失效。
+     *
+     *  所以这条排除放在**调用点**、对播放方向恒定生效：协议层仍然保留 `assistant` 这条路由的能力
+     *  （车机麦克风采集走的是另一条 SETUP，不受影响），但"给语音建一条 type 100 的播放流"
+     *  这个动作不再发生。语音拿不到 101/default 时就返回 null，由 HostAudioBridge 并进活着的通道
+     *  —— 分不开，但触屏还在。 */
+    private fun playbackExcludedRoutes(category:Int):Set<CarPlayAudioPlan.Route> {
+        val rejected=rejectedRoutes(category)?.toSet().orEmpty()
+        return if(category==3)CarPlayAudioPlan.speechPlaybackExclusions(rejected) else rejected
+    }
     /** 「会话诊断」面板：车机在 `/info` 里广告的每一条音频路由，以及它能收/能给的格式。
      *
      *  这张表是"三路音量能不能真的分开"的唯一依据：车机有几个不同的 `type`，我们才有可能
@@ -1176,7 +1191,7 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         val selected=CarPlayAudioPlan.selectPlayback(receiverAudio,category,source,
             requireDuplex=wantsInput,supportsCapture={format->
                 format.codec==CarPlayAudioPlan.Codec.PCM16||runCatching{AudioCodecSupport.decoders(format).isNotEmpty()}.getOrDefault(false)
-            },excludedRoutes=rejectedRoutes(category)?:emptySet(),
+            },excludedRoutes=playbackExcludedRoutes(category),
             separateLanes=options.separateAudioLanes){format->
             val encoders=runCatching{AudioCodecSupport.encoders(format)}.getOrDefault(emptyList())
             log("Audio category="+category+" local "+format.codec+"/"+format.rate+"/"+format.channels+" encoders="+encoders.joinToString())
