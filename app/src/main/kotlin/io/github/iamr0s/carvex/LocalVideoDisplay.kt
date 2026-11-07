@@ -143,7 +143,22 @@ private class LocalDisplay(private val display:VirtualDisplay,private val window
         if(closed)return;closed=true
         val dismiss=CountDownLatch(1)
         main.post{
-            try{window.dismiss()}finally{
+            try{
+                window.dismiss()
+                // 视频的解码器必须在宿主开始抓音频**之前**真正放手。
+                //
+                // 实车（1.0.76，19:12:36）：dismiss 只等窗口撤掉，而 MediaPlayer.release()
+                // 挂在 Compose 的 onDispose 上，是**异步**执行的。于是出现了这样一段：
+                //   36.576 NuPlayerDriver reset / decoder shutdown   ← 视频刚拆
+                //   36.615 CarlifeConnService prepareCast            ← 39ms 后宿主接管
+                //   36.699 CarlifeAudio: try to start music record
+                //   36.700 AudioSource-java: audio channel close     ← 它抢不到输入，直接放弃
+                // 之后 5 分钟宿主一帧 PCM 都没给过，车机自然全程静音，声音留在手机上。
+                // 20060~20067 那几个没加启动视频的包都有正常音频包，加了视频才开始哑。
+                //
+                // 这里同步收掉，close() 返回即代表解码器已经释放完。
+                SplashVideo.releaseActiveNow()
+            }finally{
                 runCatching{display.release()}
                 // The presentation window must be detached before the host reuses this surface.
                 dismiss.countDown()
@@ -244,6 +259,7 @@ private class SplashVideo{
         return try{
             val mp=MediaPlayer()
             player=mp
+            active.add(this)
             mp.setDataSource(file.absolutePath)
             mp.setSurface(Surface(texture))
             mp.isLooping=true
@@ -267,6 +283,10 @@ private class SplashVideo{
     fun release(){
         val mp=player?:return
         player=null
+        active.remove(this)
+        // 先摘 surface 再 reset：顺序反过来的话，解码器可能仍在向一块已经要交出去的
+        // BufferQueue 推帧，宿主拿到 surface 后第一帧就被顶掉。
+        runCatching{mp.setSurface(null)}
         runCatching{mp.reset()}
         runCatching{mp.release()}
     }
@@ -286,7 +306,21 @@ private class SplashVideo{
             null
         }
     }
-    private companion object{const val ASSET="splash.mp4"}
+    // 不是 private companion：同文件的 LocalDisplay.close() 要能调 releaseActiveNow()。
+    // 外泄风险为零 —— SplashVideo 本身就是 file-private。
+    companion object{
+        const val ASSET="splash.mp4"
+        /** 还活着的播放器。交给宿主前要能凭着它同步收干净，不能等 Compose 的 dispose。 */
+        private val active=java.util.Collections.newSetFromMap(
+            java.util.concurrent.ConcurrentHashMap<SplashVideo,Boolean>())
+
+        /** 同步释放全部播放器。必须在主线程调；`MediaPlayer.release()` 自己会阻塞到 native 侧放手。 */
+        fun releaseActiveNow(){
+            val count=active.size
+            if(count>0)LocalVideoDisplay.note("splash video released synchronously before the handoff: instances=$count")
+            active.toList().forEach{runCatching{it.release()}}
+        }
+    }
 }
 
 @Composable private fun BrandPage(name:String,caption:String){

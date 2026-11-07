@@ -111,6 +111,16 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
             val retained=active.get().values.map{it.transport}.toSet()
             previous.values.distinct().filter{it.transport !in retained}.forEach{runCatching{it.transport.close()}}
             log("${"CarWith audio categories="}${active.get().keys.sorted()}${" configured; audible acceptance pending"}")
+            // 接收端 200 只证明"我们这边准备好了"，不证明宿主会往里灌数据。
+            // 1.0.76 实车就是 SETUP 全 200、通道计数恒为 0，得翻宿主 logcat 才看出来。
+            // 这条自证能省掉那一整轮排查：建流 5 秒后一个字节都没来，就是源侧的事，不是 RTP。
+            scope.launch{
+                delay(5_000)
+                if(!closed.get()&&received.get()==0L&&active.get().isNotEmpty()){
+                    log("Audio host delivered no PCM within 5s of the stream becoming ready; "+
+                        "the receiver accepted SETUP, so the gap is on the source side, not in RTP")
+                }
+            }
         }catch(t:Throwable){
             binding?.let{failed->active.updateAndGet{routes->
                 if(closed.get())emptyMap() else routes.toMutableMap().apply{
