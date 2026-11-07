@@ -50,8 +50,65 @@ class HostAudioBridgeTest {
         }finally{bridge.close()}
     }
 
-    @Test fun callbackContinuityAccountsFor120msBlocksAndNormalJitter(){
+    /** 实车（session d8b32229）：CarWith 只广告了 `101/default` 一条非音乐路由，
+     *  会话建立时被导航（category 2）占住，于是语音（category 3）每次都在本地占位检查那里失败
+     *  （`Audio stream type=101/default already has a session`），小爱的 PCM 一路被丢掉。
+     *
+     *  语音在这种情况下必须并进那条活着的流：接收端看到的还是同一条 `101/default`，
+     *  和另建一条语音流没有任何区别，却不需要任何 SETUP。 */
+    @Test fun speechWithoutItsOwnRouteIsMergedIntoTheLiveLane():Unit=runBlocking {
         val source=PcmFormat(16000,1)
+        val nav=PcmFormat(48000,2)
+        val seen=mutableListOf<Triple<Int,PcmFormat,ByteArray>>()
+        val lane=object:NegotiatedAudioTransport {
+            @Volatile private var closed=false
+            override val ready get()=!closed
+            override val formats=mapOf(2 to nav)
+            override val microphoneFormat:PcmFormat?=null
+            override suspend fun send(category:Int,pcm:ByteArray,format:PcmFormat){
+                synchronized(seen){seen+=Triple(category,format,pcm)}
+            }
+            override fun close(){closed=true}
+        }
+        val bridge=HostAudioBridge({},configureRoute={})
+        val pcm=ByteArray(3840){it.toByte()}
+        try{
+            bridge.attach(lane)
+            bridge.receive(pcm,3,source)
+            withTimeout(2000){while(synchronized(seen){seen.isEmpty()})delay(1)}
+            val one=synchronized(seen){seen.single()}
+            // 走的是导航那条流（2），送到接收端的格式也是那条流的格式。
+            assertEquals(2,one.first);assertEquals(nav,one.second)
+            assertArrayEquals(Pcm16Converter(source,nav).convert(pcm),one.third)
+            assertEquals(0L,bridge.snapshot().dropped)
+        }finally{bridge.close()}
+    }
+
+    /** 有自己的流时绝不合并：车机广告了 `100/speechRecognition` 就必须各走各的。 */
+    @Test fun aCategoryWithItsOwnRouteIsNotMerged():Unit=runBlocking {
+        val nav=PcmFormat(48000,2);val speech=PcmFormat(16000,1)
+        val counts=mutableMapOf<Int,AtomicInteger>()
+        val transport=object:NegotiatedAudioTransport {
+            @Volatile private var closed=false
+            override val ready get()=!closed
+            override val formats=mapOf(2 to nav,3 to speech)
+            override val microphoneFormat:PcmFormat?=null
+            override suspend fun send(category:Int,pcm:ByteArray,format:PcmFormat){
+                synchronized(counts){counts.getOrPut(category){AtomicInteger()}.incrementAndGet()}
+            }
+            override fun close(){closed=true}
+        }
+        val bridge=HostAudioBridge({},configureRoute={})
+        try{
+            bridge.attach(transport)
+            bridge.receive(ByteArray(3840),3,speech)
+            withTimeout(2000){while(synchronized(counts){counts[3]?.get()?:0}==0)delay(1)}
+            assertEquals(0,synchronized(counts){counts[2]?.get()?:0})
+            assertEquals(1,synchronized(counts){counts[3]?.get()?:0})
+        }finally{bridge.close()}
+    }
+
+    @Test fun callbackContinuityAccountsFor120msBlocksAndNormalJitter(){        val source=PcmFormat(16000,1)
         assertFalse(pcmCallbackHasGap(null,0,source,3840))
         assertFalse(pcmCallbackHasGap(0,120_000_000,source,3840))
         assertFalse(pcmCallbackHasGap(0,150_000_000,source,3840))

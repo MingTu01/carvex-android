@@ -32,7 +32,9 @@ internal fun pcmCallbackHasGap(previousNanos:Long?,currentNanos:Long,format:PcmF
 class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:(suspend ()->Unit)?=null):AutoCloseable {
     data class Snapshot(val received:Long,val dropped:Long,val forwardedBytes:Long,val microphoneBytes:Long)
     private data class Binding(val transport:NegotiatedAudioTransport,val formats:Map<Int,PcmFormat>,val mic:PcmFormat?)
-    private data class Block(val pcm:ByteArray,val format:PcmFormat,val binding:Binding,val queuedAt:Long)
+    /** [source] 是宿主报的那个类别，可能不等于通道号：语音（3）会被并进导航那条通道（2），
+     *  日志里必须能分清"这段声音本来是哪个类别送来的"，否则合并之后就再也查不清了。 */
+    private data class Block(val pcm:ByteArray,val format:PcmFormat,val binding:Binding,val queuedAt:Long,val source:Int)
     private val active=AtomicReference<Map<Int,Binding>>(emptyMap())
     private val micReceiver=AtomicReference<Pair<MicrophoneInput,PcmFormat>?>(null)
     private val closed=AtomicBoolean(false)
@@ -44,6 +46,8 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
     private val firstPcmObserved=AtomicIntegerArray(4)
     /** 「宿主送来了，但我们这条流压根没建」每类只报一次，见 [receive]。 */
     private val noLaneReported=AtomicIntegerArray(IntArray(4))
+    /** 「这一类没有自己的流，并进了别的活流」每类只报一次。 */
+    private val mergedReported=AtomicIntegerArray(IntArray(4))
     private val routeLock=Mutex()
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val queues=(1..3).associateWith{Channel<Block>(8)}
@@ -69,7 +73,8 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
                 if(previous!==block.binding||converter?.source!=block.format||
                     pcmCallbackHasGap(lastArrival,block.queuedAt,block.format,block.pcm.size)){
                     converter=Pcm16Converter(block.format,target);previous=block.binding
-                    log("${"Audio category="}${category}${" PCM source="}${block.format.rate}${"/"}${block.format.channels}${" target="}${target.rate}${"/"}${target.channels}${"; independent lane"}")
+                    log("${"Audio category="}${category}${" PCM source="}${block.format.rate}${"/"}${block.format.channels}${" target="}${target.rate}${"/"}${target.channels}${"; independent lane"}"+
+                        (if(block.source!=category)" (merged from category="+block.source+"; this lane is the one the receiver offers for non-music audio)" else ""))
                 }
                 lastArrival=block.queuedAt
                 val converted=requireNotNull(converter).convert(block.pcm)
@@ -150,34 +155,60 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
     suspend fun attachMicrophone(receiver:MicrophoneInput,format:PcmFormat){
         routeLock.lock();try{check(!closed.get()&&receiver.ready){"Microphone receiver not ready"};micReceiver.getAndSet(receiver to format)?.first?.close();log("${"CarWith microphone receiver configured format="}${format.rate}${"/"}${format.channels}")}finally{routeLock.unlock()}
     }
+    /** 宿主送来某个类别的 PCM 时，这份数据该走哪一条已经建好的流。
+     *
+     *  正常情况就是它自己那一条。但**语音（category 3）在 CarWith 上根本没有自己的路**：
+     *  实车 `/info` 里它只广告了 `101/default`，而 `101/default` 在会话建立时已经被导航
+     *  （category 2）占住了 —— 于是语音流每次都在本地占位检查那里失败
+     *  （`Audio stream type=101/default already has a session`），小爱的 PCM 一路被丢掉。
+     *
+     *  不去抢同一条流是**对的**：一个 (type, purpose) 在接收端就是一条流，两个 send 混在
+     *  一起发送只会两边都speech不清楚。但 `101/default` 本来就是接收端给"非音乐音源"准备的那一块
+     *  地方 —— 语音要是能建流，拿到的也是它。所以把语音并进已经活着的那条，路由、格式、
+     *  收端解码路径都和另建一条完全一样，却不需要任何 SETUP，也就不会碰车机的输入焦点。
+     *
+     *  只有真的没有自己的流时才合并；车机广告了 `100/speechRecognition` 时仍然各走各的。 */
+    private fun routeFor(category:Int):Int?{
+        val routes=active.get()
+        if(routes[category]!=null)return category
+        if(category!=3)return null
+        return when{
+            routes[2]!=null->2
+            routes[1]!=null->1
+            else->null
+        }
+    }
     /** Binder callback performs no conversion or network operation. Stale data cannot cross bindings. */
     fun receive(pcm:ByteArray,category:Int,format:PcmFormat){
         if(closed.get())return
         require(category in 1..3&&format.accepts(pcm.size))
         received.incrementAndGet()
-        val binding=active.get()[category]
+        val route=routeFor(category)
+        val binding=route?.let{active.get()[it]}
         if(firstPcmObserved.compareAndSet(category,0,1)){
             log("Audio source first category=$category monoNs="+System.nanoTime()+
                 " bytes="+pcm.size+" source="+format.rate+"/"+format.channels+
                 " attached="+(binding!=null)+" ready="+(binding?.transport?.ready==true)+
+                (if(route!=null&&route!=category)" mergedInto=$route" else "")+
                 "; callback observed before queue admission")
+            if(route!=null&&route!=category&&mergedReported.compareAndSet(category,0,1))
+                log("Audio category=$category has no stream of its own on this receiver; its PCM is merged into the live category=$route lane, which is the same 101/default route the speech stream itself would have used")
         }
         if(binding==null||!binding.transport.ready){
             dropped.incrementAndGet()
             // 这一行是「某个声音在车机上没出来」的第一判据，所以每类必报一次。
-            // 宿主按 category 分声道，我们只建了 1/2 两条（见 CarPlayAudioPlan.bootstrapPlayback），
-            // 所以只要它把某种声音归到 3，那份 PCM 就必然落进这里 —— 此时问题不在 RTP、
+            // 走到这里说明这一类既没有自己的流，也没有可并入的活流 —— 此时问题不在 RTP、
             // 不在密码、也不在音量，而是"这条流从来没建过"。
             if(noLaneReported.compareAndSet(category,0,1))
                 log("Audio source category=$category has no established stream; the host is sending this audio on a lane we never set up, so it is dropped here and never reaches RTP")
             return
         }
-        val queue=queues.getValue(category)
+        val queue=queues.getValue(requireNotNull(route))
         // A fresh callback's duration is not its queue age. In particular, the host
         // supplies 120 ms speech blocks: clipping each to 100 ms loses 1/6 of speech.
         // PcmFormat already bounds each allocation to 32768 bytes; the eight-slot
         // queue and dequeue freshness check still bound memory and stale backlog.
-        val block=Block(pcm.copyOf(),format,binding,System.nanoTime())
+        val block=Block(pcm.copyOf(),format,binding,System.nanoTime(),category)
         val now=System.nanoTime()
         val previousPcm=lastPcmNanos.getAndSet(category,now)
         if(previousPcm==0L||now-previousPcm>200_000_000L){
@@ -189,7 +220,8 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
         rxBlocks[category]++;rxBytes[category]+=block.pcm.size
         if(rxBlocks[category]==1||now-rxLastLogNs[category]>5_000_000_000L){
             rxLastLogNs[category]=now
-            val target=binding.formats.getValue(category)
+            // 合并的时候要读**并进去的那条流**的格式，读自己的会取不到。
+            val target=binding.formats.getValue(requireNotNull(route))
             log("Audio host category="+category+" blocks="+rxBlocks[category]+" bytes="+rxBytes[category]+
                 " source="+format.rate+"/"+format.channels+" target="+target.rate+"/"+target.channels+
                 "; this is the host lane that decides speech vs media")
