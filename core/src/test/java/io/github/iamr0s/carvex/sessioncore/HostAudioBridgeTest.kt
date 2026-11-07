@@ -108,6 +108,74 @@ class HostAudioBridgeTest {
         }finally{bridge.close()}
     }
 
+    /** 合并之后两路声音**不能一块一块拼**：那是每 120 ms 换一个人的断续句子，
+     *  实车（session a77d8359）小爱唤醒导航之后听到的就是这个。共享通道一次只让一个来源说话。
+     *
+     *  用送出去的字节数区分来源。这里**不写死**转换后的长度：重采样器是带相位状态的，
+     *  16k/1→48k/2 对同一个块实际输出比理论值少几个样本，48k/2→48k/2 则是原样透传。
+     *  用同一套 [Pcm16Converter] 现算期望值，测的就只剩仲裁逻辑本身。 */
+    @Test fun aSharedLaneCarriesOneSourceAtATime():Unit=runBlocking {
+        val nav=PcmFormat(48000,2);val speech=PcmFormat(16000,1)
+        val seen=mutableListOf<Int>()
+        val lane=object:NegotiatedAudioTransport {
+            @Volatile private var closed=false
+            override val ready get()=!closed
+            override val formats=mapOf(2 to nav)
+            override val microphoneFormat:PcmFormat?=null
+            override suspend fun send(category:Int,pcm:ByteArray,format:PcmFormat){
+                synchronized(seen){seen+=pcm.size}
+            }
+            override fun close(){closed=true}
+        }
+        val bridge=HostAudioBridge({},configureRoute={})
+        val speechBlock=ByteArray(1920){it.toByte()}
+        val navBlock=ByteArray(5760){it.toByte()}
+        val speechOut=Pcm16Converter(speech,nav).convert(speechBlock).size
+        try{
+            bridge.attach(lane)
+            // 语音先占住通道。
+            bridge.receive(speechBlock,3,speech)
+            withTimeout(2000){while(synchronized(seen){seen.isEmpty()})delay(1)}
+            // 紧接着的导航块必须让路，不能插进同一句话里。
+            repeat(3){bridge.receive(navBlock,2,nav)}
+            delay(120)
+            assertEquals("导航块抢不过还在说话的语音，只有语音那一块被发出去",
+                listOf(speechOut),synchronized(seen){seen.toList()})
+            assertEquals(3L,bridge.snapshot().yielded)
+        }finally{bridge.close()}
+    }
+
+    /** 语音优先级高于导航：导航正在说的时候，语音可以立刻抢占。 */
+    @Test fun speechPreemptsNavigationOnTheSharedLane():Unit=runBlocking {
+        val nav=PcmFormat(48000,2);val speech=PcmFormat(16000,1)
+        val seen=mutableListOf<Int>()
+        val lane=object:NegotiatedAudioTransport {
+            @Volatile private var closed=false
+            override val ready get()=!closed
+            override val formats=mapOf(2 to nav)
+            override val microphoneFormat:PcmFormat?=null
+            override suspend fun send(category:Int,pcm:ByteArray,format:PcmFormat){
+                synchronized(seen){seen+=pcm.size}
+            }
+            override fun close(){closed=true}
+        }
+        val bridge=HostAudioBridge({},configureRoute={})
+        val navBlock=ByteArray(5760){it.toByte()}
+        val speechBlock=ByteArray(1920){it.toByte()}
+        val navOut=Pcm16Converter(nav,nav).convert(navBlock).size
+        val speechOut=Pcm16Converter(speech,nav).convert(speechBlock).size
+        try{
+            bridge.attach(lane)
+            bridge.receive(navBlock,2,nav)
+            withTimeout(2000){while(synchronized(seen){seen.isEmpty()})delay(1)}
+            // 抢占不需要等对方安静下来。
+            bridge.receive(speechBlock,3,speech)
+            withTimeout(2000){while(synchronized(seen){seen.size<2})delay(1)}
+            assertEquals(listOf(navOut,speechOut),synchronized(seen){seen.toList()})
+            assertEquals(0L,bridge.snapshot().yielded)
+        }finally{bridge.close()}
+    }
+
     @Test fun callbackContinuityAccountsFor120msBlocksAndNormalJitter(){        val source=PcmFormat(16000,1)
         assertFalse(pcmCallbackHasGap(null,0,source,3840))
         assertFalse(pcmCallbackHasGap(0,120_000_000,source,3840))

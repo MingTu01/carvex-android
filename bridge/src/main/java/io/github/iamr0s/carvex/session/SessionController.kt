@@ -34,11 +34,15 @@ private const val FAIL="CarVexFail"
 
 private const val MIN_BITRATE=1_000_000
 
-/** 按像素率估算码率：约 0.13 bit/像素/帧，最低 1 Mbps。
- *  例：1080p30≈8.1 Mbps、720p30≈3.6 Mbps、1080p60≈16.2 Mbps。 */
+/** 按像素数推初始码率：每像素每帧 0.13 bit，最低 1 Mbps。
+ *  例：1024x600@30≈2.4 Mbps、720p30≈3.6 Mbps、1080p30≈8.1 Mbps。
+ *
+ *  关键在"按像素数"这四个字：分辨率一变，码率必须同比例跟着变，否则换到大画布就是拿同一个
+ *  码率摊到更多像素上，画面反而更糊。上限 12 Mbps 与 [VideoRatePolicy] 自己的天花板一致 ——
+ *  再往上，手机热点这条链路也吃不下，加码率只会换成排队延迟。 */
 private fun nominalBitrate(width:Int,height:Int,fps:Int):Int {
     val pixelFramesPerSecond=width.toLong()*height*fps
-    return (pixelFramesPerSecond*13/100).toInt().coerceAtLeast(MIN_BITRATE)
+    return (pixelFramesPerSecond*13/100).toInt().coerceIn(MIN_BITRATE,12_000_000)
 }
 
 class SessionController(
@@ -997,11 +1001,31 @@ class SessionController(
                 val format=h.format(activeScreen.width,activeScreen.height)
                 val queriedWidth=if(format?.containsKey("width")==true)format.getInt("width") else activeScreen.width
                 val queriedHeight=if(format?.containsKey("height")==true)format.getInt("height") else activeScreen.height
-                val proportional=queriedWidth>0&&queriedHeight>0&&activeScreen.width.toLong()*queriedHeight==activeScreen.height.toLong()*queriedWidth
-                val hostWidth=if(proportional)queriedWidth else activeScreen.width
-                val hostHeight=if(proportional)queriedHeight else activeScreen.height
-                if(!proportional&&format?.containsKey("width")==true&&format.containsKey("height"))BridgeStore.log(id,"${"CarWith encode suggestion "}${queriedWidth}${"x"}${queriedHeight}${" has different aspect ratio from receiver "}${activeScreen.width}${"x"}${activeScreen.height}${"; using receiver dimensions"}")
-                BridgeStore.log(id,"${"Video geometry: receiver="}${activeScreen.width}${"x"}${activeScreen.height}${" host="}${hostWidth}${"x"}${hostHeight}${" proportional="}${proportional}")
+                // 车机建议的画布什么时候采纳。
+                //
+                // 原来要求**宽高比整数完全相等**（`rw*qh == rh*qw`），否则整条建议作废、退回接收端
+                // 自己报的尺寸。实车（session a77d8359）接收端报的是 **1024x600**，车机面板是
+                // 1280x720 —— 两者宽高比差 4.2%，于是车机上任何"1280x720 / 1920x1080"的分辨率
+                // 选择都会被这一条判掉，表现就是**改分辨率完全没反应**，而 1024x600 被面板放大到
+                // 720p 之后必然是糊的。
+                //
+                // 改成按相对误差判（与 [ProjectionGeometry] 同一个容差），并且**不接受更小的建议**：
+                // 放大是拿细节换延迟，缩小纯粹是丢细节。码率由 nominalBitrate 按像素数同比例推导，
+                // 所以换尺寸不会把画面压糊。
+                val aspectErrorPercent=ProjectionGeometry.aspectErrorPercent(
+                    activeScreen.width,activeScreen.height,queriedWidth,queriedHeight)
+                val suggestedPixels=queriedWidth.toLong()*queriedHeight
+                val receiverPixels=activeScreen.width.toLong()*activeScreen.height
+                val acceptSuggestion=queriedWidth>0&&queriedHeight>0&&
+                    aspectErrorPercent<=ProjectionGeometry.ASPECT_TOLERANCE_PERCENT&&suggestedPixels>=receiverPixels
+                val hostWidth=if(acceptSuggestion)queriedWidth else activeScreen.width
+                val hostHeight=if(acceptSuggestion)queriedHeight else activeScreen.height
+                if(!acceptSuggestion&&format?.containsKey("width")==true&&format.containsKey("height"))
+                    BridgeStore.log(id,"CarWith encode suggestion "+queriedWidth+"x"+queriedHeight+
+                        " rejected: aspect differs by "+aspectErrorPercent+"% from receiver "+activeScreen.width+"x"+activeScreen.height+
+                        " (limit "+ProjectionGeometry.ASPECT_TOLERANCE_PERCENT+"%)"+
+                        (if(suggestedPixels<receiverPixels)" and it is smaller" else "")+"; using receiver dimensions")
+                BridgeStore.log(id,"${"Video geometry: receiver="}${activeScreen.width}${"x"}${activeScreen.height}${" host="}${hostWidth}${"x"}${hostHeight}${" acceptedSuggestion="}${acceptSuggestion}${" suggestion="}${queriedWidth}${"x"}${queriedHeight}${" aspectErrorPercent="}${aspectErrorPercent}${" pixels="}${receiverPixels}${"->"}${hostWidth.toLong()*hostHeight}")
                 val geometry=ProjectionGeometry(activeScreen.width,activeScreen.height,hostWidth,hostHeight)
                 projectionGeometry.set(geometry)
                 // 帧率：接收端 maxFPS 与车机建议都只是上限，取较小者；编码器再夹一次。

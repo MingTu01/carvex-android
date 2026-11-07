@@ -182,6 +182,13 @@ object BridgeStore {
     /** 会同时镜像到 logcat 的行前缀。只放音频/语音：这是在车上唯一"必须当场判定"的一条线。 */
     private val AUDIO_LOGCAT_PREFIXES=listOf(
         "Audio ","CarWith audio","CarPlay audio","Voice ","Audio transport","Active media key")
+    /** 画面侧同理，但更窄：全是每会话一条的定档记录，不含任何逐帧数据。
+     *
+     *  加它的直接原因：「车机上的画面糊」要靠 `Video geometry` 里的 receiver / host 两个尺寸
+     *  和 `Video bitrate` 的推算过程来判，而这几个值原来只落在 diagnostic.log 里 —— 那个文件
+     *  在车上根本打不开。 */
+    private val VIDEO_LOGCAT_PREFIXES=listOf(
+        "Video geometry:","Video limits:","Video bitrate=","AVC selected","CarWith encode suggestion")
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     @Synchronized fun init(c:Context){
         if(::context.isInitialized)return;context=c.applicationContext
@@ -310,6 +317,8 @@ object BridgeStore {
             // runCatching：单元测试跑在纯 JVM 上，没有 android.util.Log 的桩，
             // 镜像失败不该让一条日志把会话带崩。
             runCatching{android.util.Log.i("CarVexAudio","["+id+"] "+redact(message))}
+        }else if(VIDEO_LOGCAT_PREFIXES.any{message.startsWith(it)}){
+            runCatching{android.util.Log.i("CarVexVideo","["+id+"] "+redact(message))}
         }
         if(id==mutable.value.id){
             if(sessionStartup.size<220)sessionStartup.add(line)

@@ -30,7 +30,16 @@ internal fun pcmCallbackHasGap(previousNanos:Long?,currentNanos:Long,format:PcmF
 }
 
 class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:(suspend ()->Unit)?=null):AutoCloseable {
-    data class Snapshot(val received:Long,val dropped:Long,val forwardedBytes:Long,val microphoneBytes:Long)
+    private companion object {
+        /** 共享通道换人说话前要求的静默间隔。
+         *
+         *  400 ms 略大于一个 120 ms 的 PCM 块加上调度抖动：短了会在同一句话的块间隙里来回换人，
+         *  又回到断续；长了会让低优先级的导航播报等太久。 */
+        const val LANE_HOLD_NS=400_000_000L
+    }
+    data class Snapshot(val received:Long,val dropped:Long,val forwardedBytes:Long,val microphoneBytes:Long,
+        /** 因为共享通道被别人占着而让路丢掉的块数。不掉帧的时候它一直是 0。 */
+        val yielded:Long=0L)
     private data class Binding(val transport:NegotiatedAudioTransport,val formats:Map<Int,PcmFormat>,val mic:PcmFormat?)
     /** [source] 是宿主报的那个类别，可能不等于通道号：语音（3）会被并进导航那条通道（2），
      *  日志里必须能分清"这段声音本来是哪个类别送来的"，否则合并之后就再也查不清了。 */
@@ -178,6 +187,34 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
             else->null
         }
     }
+    /** 共享通道上"此刻是谁在说"。
+     *
+     *  合并进来的声音和通道本来的声音**不能一块一块拼**：两路 PCM 交替进同一个 RTP 流，
+     *  车上听到的就是每 120 ms 换一个人的断续句子。真车（session a77d8359）里小爱唤醒导航之后
+     *  就是这个症状。
+     *
+     *  接收端自己处理这种情况的办法是**让路**，不是混音：优先级高的说完，低的等着或被丢掉。
+     *  这里照做 —— 一次只让一个来源占着通道，换人要有静默间隔（[LANE_HOLD_NS]），
+     *  高优先级（语音 3 > 导航 2）可以立刻抢占，低优先级只能等对方彻底安静下来。 */
+    private val laneOwner=AtomicIntegerArray(IntArray(4))
+    private val laneOwnerAt=java.util.concurrent.atomic.AtomicLongArray(4)
+    private val laneLock=Any()
+    private val yielded=AtomicLong()
+    /** 车机的语音提示（3）比导航播报（2）优先：前者是对用户这句话的回答，被截断就什么都听不到；
+     *  后者几秒后还会重播。 */
+    private fun claimLane(route:Int,source:Int):Boolean{
+        val now=System.nanoTime()
+        synchronized(laneLock){
+            val owner=laneOwner.get(route)
+            val idle=now-laneOwnerAt.get(route)
+            if(owner==0||owner==source||idle>LANE_HOLD_NS||source>owner){
+                laneOwner.set(route,source);laneOwnerAt.set(route,now)
+                return true
+            }
+            yielded.incrementAndGet()
+            return false
+        }
+    }
     /** Binder callback performs no conversion or network operation. Stale data cannot cross bindings. */
     fun receive(pcm:ByteArray,category:Int,format:PcmFormat){
         if(closed.get())return
@@ -203,7 +240,14 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
                 log("Audio source category=$category has no established stream; the host is sending this audio on a lane we never set up, so it is dropped here and never reaches RTP")
             return
         }
-        val queue=queues.getValue(requireNotNull(route))
+        // 这条流被两类共用时才需要仲裁。语音自己没有流（active[3]==null）就是把语音并进 2 的情形。
+        val lane=requireNotNull(route)
+        val shared=lane==2&&active.get()[3]==null
+        if(shared&&!claimLane(lane,category)){
+            dropped.incrementAndGet()
+            return
+        }
+        val queue=queues.getValue(lane)
         // A fresh callback's duration is not its queue age. In particular, the host
         // supplies 120 ms speech blocks: clipping each to 100 ms loses 1/6 of speech.
         // PcmFormat already bounds each allocation to 32768 bytes; the eight-slot
@@ -221,9 +265,10 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
         if(rxBlocks[category]==1||now-rxLastLogNs[category]>5_000_000_000L){
             rxLastLogNs[category]=now
             // 合并的时候要读**并进去的那条流**的格式，读自己的会取不到。
-            val target=binding.formats.getValue(requireNotNull(route))
+            val target=binding.formats.getValue(lane)
             log("Audio host category="+category+" blocks="+rxBlocks[category]+" bytes="+rxBytes[category]+
                 " source="+format.rate+"/"+format.channels+" target="+target.rate+"/"+target.channels+
+                (if(shared)" sharedLaneOwner="+laneOwner.get(lane)+" yielded="+yielded.get() else "")+
                 "; this is the host lane that decides speech vs media")
         }
         if(queue.trySend(block).isFailure){
@@ -273,7 +318,7 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
             return accepted
         }finally{routeLock.unlock()}
     }
-    fun snapshot()=Snapshot(received.get(),dropped.get(),forwarded.get(),microphoneBytes.get())
+    fun snapshot()=Snapshot(received.get(),dropped.get(),forwarded.get(),microphoneBytes.get(),yielded.get())
     override fun close(){
         if(!closed.compareAndSet(false,true))return
         active.getAndSet(emptyMap()).values.distinct().forEach{runCatching{it.transport.close()}}
