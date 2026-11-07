@@ -25,7 +25,8 @@ class SeparatedAudioLanesTest {
     @After fun restore(){CarPlayAudioPlan.useTransport(previous)}
 
     private fun full()=listOf(
-        AudioCapabilities.Entry(102,"media",null,aacLc),
+        // 102 同时广告 PCM 与 AAC：实车 0fbfe122 的那次只拿到 AAC，媒体因此一个字节都没推上来。
+        AudioCapabilities.Entry(102,"media",null,pcm or aacLc),
         AudioCapabilities.Entry(100,"media",null,pcm),
         AudioCapabilities.Entry(101,"default",null,pcm),
         AudioCapabilities.Entry(100,"speechRecognition",pcm,pcm),
@@ -40,9 +41,9 @@ class SeparatedAudioLanesTest {
         val media=pick(entries,1,separate=true)!!
         val prompt=pick(entries,2,separate=true)!!
         val speech=pick(entries,3,separate=true)!!
-        // 媒体在 102 上只能走压缩 —— PCM 在 102 上不被本端允许（wireSupported 只放 100/101）。
+        // 媒体在 102 上走 PCM：CarWith 只采 PCM，压缩编码会得到一条没有源的流。
         assertEquals(102,media.route.type)
-        assertEquals(CarPlayAudioPlan.Codec.AAC_LC,media.format.codec)
+        assertEquals(CarPlayAudioPlan.Codec.PCM16,media.format.codec)
         assertEquals(101,prompt.route.type)
         assertEquals(CarPlayAudioPlan.Codec.PCM16,prompt.format.codec)
         assertEquals(100,speech.route.type)
@@ -62,11 +63,11 @@ class SeparatedAudioLanesTest {
         assertEquals(101,speech.route.type)
     }
 
-    @Test fun mediaFallsBackToTheOldLaneWhen102HasNoUsableEncoder() {
-        // 102 只广告了 PCM：本端不允许在 102 上发 PCM，所以 media(102) 交出 null，
-        // 循环自然落到 mediaLowLatency(100)，行为与关闭分离时完全一致。
+    @Test fun mediaFallsBackToTheOldLaneWhen102AdvertisesNothingUsable() {
+        // 102 一条格式都没广告：media(102) 交出 null，循环自然落到 mediaLowLatency(100)，
+        // 行为与关闭分离时完全一致 —— 宁可"分不开但有声"。
         val entries=listOf(
-            AudioCapabilities.Entry(102,"media",null,pcm),
+            AudioCapabilities.Entry(102,"media",null,0L),
             AudioCapabilities.Entry(100,"media",null,pcm),
         )
         val media=pick(entries,1,separate=true)!!
@@ -74,10 +75,34 @@ class SeparatedAudioLanesTest {
         assertEquals(CarPlayAudioPlan.Codec.PCM16,media.format.codec)
     }
 
-    @Test fun mediaFallsBackWhenTheLocalEncoderIsMissing() {
-        val entries=full()
-        val rejected=CarPlayAudioPlan.selectPlayback(entries,1,source,requireDuplex=false,
-            preferPcm=true,preferPcmAlert=true,preferSpeechAlt=true,separateLanes=true){false}!!
+    /** 落回 102 的**实测教训**（session 0fbfe122）：媒体在 102 上被选成 AAC_LC，SETUP 200，
+     *  可 CarWith 的 `music record` 采的是 PCM，编码不了就一个字节都不推 —— 车机上音乐直接哑了。
+     *  所以 102 上有 PCM 时必须优先 PCM；没有 PCM 位就**根本别选 102**。 */
+    @Test fun mediaUsesPcmOn102AndRefusesItOtherwise() {
+        val withPcm=listOf(
+            AudioCapabilities.Entry(102,"media",null,pcm or aacLc),
+            AudioCapabilities.Entry(100,"media",null,pcm),
+        )
+        val media=pick(withPcm,1,separate=true)!!
+        assertEquals(102,media.route.type)
+        assertEquals(CarPlayAudioPlan.Codec.PCM16,media.format.codec)
+        assertEquals(source,media.format.decodedPcm)
+
+        // 102 只有压缩编码：不选它，落回 100 的 PCM。否则就是一条没有源的流。
+        val encodedOnly=listOf(
+            AudioCapabilities.Entry(102,"media",null,aacLc),
+            AudioCapabilities.Entry(100,"media",null,pcm),
+        )
+        val fallback=pick(encodedOnly,1,separate=true)!!
+        assertEquals(100,fallback.route.type)
+        assertEquals(CarPlayAudioPlan.Codec.PCM16,fallback.format.codec)
+    }
+
+    @Test fun theProvenConfigurationNeverDependsOnALocalEncoder() {
+        // 关掉分离时媒体走 100 的 PCM，本机没有编码器也一样出声 —— 这是目前实车跑通的那套，
+        // 不能因为实验开关的存在而变得依赖编码器。
+        val rejected=CarPlayAudioPlan.selectPlayback(full(),1,source,requireDuplex=false,
+            preferPcm=true,preferPcmAlert=true,preferSpeechAlt=true,separateLanes=false){false}!!
         assertEquals(100,rejected.route.type)
         assertEquals(CarPlayAudioPlan.Codec.PCM16,rejected.format.codec)
     }

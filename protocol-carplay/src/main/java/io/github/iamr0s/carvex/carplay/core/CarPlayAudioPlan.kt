@@ -192,8 +192,19 @@ object CarPlayAudioPlan {
             val pcm=pcmCompatibility(entries,route,source)?.takeIf(::pcmInputSupported)
             if(pcm!=null)return Selection(route,pcm)
         }
+        // 分离模式：媒体在 `102/media` 上优先走 PCM。见 [pcmOnMedia102] 的说明 ——
+        // 用压缩编码要到的是一条"SETUP 能过、但永远等不到数据"的流。
+        //
+        // 反过来更重要：102 上没有 PCM 位时就**完全不要碰它**。CarWith 采的是 PCM，
+        // 压缩编码在它那儿等于要不到数据，选中了就是音乐变哑。宁可留在 100 上分不开，
+        // 也不能交出一条没有源的流。
+        val skipped=if(separateLanes&&category==1){
+            val pcm102=pcmOnMedia102(entries,source)
+            if(pcm102!=null&&media !in excludedRoutes)return Selection(media,pcm102)
+            excludedRoutes+media
+        }else excludedRoutes
         for(route in choices){
-            if(route in excludedRoutes)continue
+            if(route in skipped)continue
             // Do not globally disable an advertised codec here. The firmware selects
             // from the per-route capability mask; a local encoder intersection decides
             // whether that candidate survives. Device-specific isolation belongs in an
@@ -273,6 +284,17 @@ object CarPlayAudioPlan {
             Codec.AAC_LC,Codec.AAC_ELD,Codec.OPUS->route.type in setOf(100,101,102)
         }
     }
+    /** 只给「三路分离」这一条实验路径用：`102/media` 上的 PCM。
+     *
+     *  [wireSupported] 有意不收 type 102 的 PCM —— 那是从 100/101 的实测覆盖推出来的通用门禁，
+     *  不能为一个还没定论的实验去放宽它（放宽会连带改掉默认路径的行为）。但实车
+     *  （session `0fbfe122`）里媒体在 102 上只拿到 AAC_LC，SETUP 200，RTP 包里一个字节都没有：
+     *  CarWith 的 `music record` 采的是 PCM，它编码不了就不推。所以这里单独放行，
+     *  范围缩到"102 + PCM + 分离模式"这一种组合。 */
+    private fun pcmOnMedia102(entries:List<AudioCapabilities.Entry>,source:PcmFormat):Format? =
+        playbackFormats(entries,media).filter{it.codec==Codec.PCM16&&it.rate%200==0}
+            .sortedWith(compareBy<Format>({if(it.rate==source.rate)0 else 1},
+                {if(it.channels==source.channels)0 else 1},{-it.rate})).firstOrNull()
     /** Local category map when no peer capability exists yet; runtime uses [selectPlayback]. */
     fun implementedRouteForCategory(category:Int):Route=when(category){
         1->mediaLowLatency

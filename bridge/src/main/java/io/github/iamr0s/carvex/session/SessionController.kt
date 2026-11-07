@@ -314,6 +314,7 @@ class SessionController(
         val queueMs=AtomicLong();val writeMs=AtomicLong();val idr=AtomicLong()
         val idleRepeats=AtomicLong();val idleRepeatFailures=AtomicLong()
         var measuredAt=System.nanoTime();var measuredFrames=0L;var measuredBytes=0L;var measuredEncoded=0L
+        var diagLoggedAt=0L
         val metrics=timer.scheduleAtFixedRate({
             val now=System.nanoTime();val f=frames.get();val b=bytes.get()
             val seconds=(now-measuredAt)/1_000_000_000.0
@@ -329,6 +330,22 @@ class SessionController(
                 sentFps=(f-measuredFrames)/seconds,sentMbps=(b-measuredBytes)*8/seconds/1_000_000,
                 encodedFps=(encoded.get()-measuredEncoded)/seconds,droppedFrames=dropped.get(),queueMs=queueMs.getAndSet(0),writeMs=writeMs.getAndSet(0),idrRequests=idr.get())}
             measuredAt=now;measuredFrames=f;measuredBytes=b;measuredEncoded=encoded.get()
+            // 同一份诊断数据再打一份到 logcat：界面上那个面板要人跑到设置里去看，
+            // 而"画面糊/声音混"这两件事经常是在车上随口一句反馈，得能直接从日志读到全貌。
+            if(now-diagLoggedAt>5_000_000_000L){
+                diagLoggedAt=now
+                runCatching{
+                    val st=BridgeStore.state.value
+                    if(st.id==id&&st.width>0){
+                        android.util.Log.i("CarVexDiag","video receiver="+st.receiverWidth+"x"+st.receiverHeight+
+                            " suggested="+st.suggestedWidth+"x"+st.suggestedHeight+" accepted="+st.suggestionAccepted+
+                            " aspect="+st.aspectPercent+"% host="+st.width+"x"+st.height+
+                            " codec="+st.encoderName+" bitrate="+st.targetBitrate+" fps="+st.targetFps)
+                        lanes.forEach{android.util.Log.i("CarVexDiag","lane "+it)}
+                        st.audioRoutes.forEach{android.util.Log.i("CarVexDiag","route "+it)}
+                    }
+                }
+            }
         },1000,1000,TimeUnit.MILLISECONDS)
         fun failure(t:Throwable){if(attemptJob.isActive&&!ended.get()&&failed.complete(t)){BridgeStore.log(id,"channel failure "+t.javaClass.simpleName+" "+(t.message?:"no message"));if(false)t.stackTrace.take(4).forEach{BridgeStore.log(id,"${"channel origin "}${it}")};cleanup.close()}}
         suspend fun <T> phase(stage:Stage,millis:Long,block:suspend()->T):T {

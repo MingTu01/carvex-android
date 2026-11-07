@@ -89,6 +89,10 @@ fun SettingsPage(
     ) {
         ScreenTitle(stringResource(R.string.nav_settings))
 
+        // 诊断放在设置的最上面：车机上"画面糊 / 声音分不开"的时候，人是在设置里找东西的，
+        // 而这两件事的答案全是几个数字。原来只放在设备详情页，结果根本找不到。
+        SessionDiagnostics()
+
         // Local device name + switches
         Panel {
             var name by remember(s.deviceName) { mutableStateOf(s.deviceName) }
