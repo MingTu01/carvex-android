@@ -220,6 +220,18 @@ private class BridgePresentation(context:Context,display:Display,private val bra
 @Composable private fun SplashPage(brand:String){
     val context=LocalContext.current
     var fallback by remember{ mutableStateOf(false) }
+    // 用户上传的素材优先，没有才回内置视频。图片走静态绘制 —— 一张图没必要为它开解码器。
+    val custom=remember{ SplashAsset.current(context.applicationContext) }
+    val image=remember(custom){ custom?.takeIf{SplashAsset.isImage(it)}
+        ?.let{SplashAsset.decodeImage(context.applicationContext,it)} }
+    if(custom!=null&&image!=null){
+        Box(Modifier.fillMaxSize().background(Color.Black)){
+            // Fit 而不是 Crop：上传的多半是带字的品牌图，裁掉边缘比留黑边更糟。
+            Image(bitmap=image.asImageBitmap(),contentDescription=null,contentScale=ContentScale.Fit,
+                modifier=Modifier.fillMaxSize())
+        }
+        return
+    }
     if(fallback){
         BrandPage(brand,"正在建立投屏通道")
         return
@@ -295,7 +307,15 @@ private class SplashVideo{
      *  `openFd` 只对**未压缩**的资产成立，而资产是否被压缩取决于打包配置——一旦哪天被压缩，
      *  启动画面就会在车上变黑，且只在车上才看得出来。多拷一次 1.6MB 换掉这个隐患值得。
      *  文件名带 versionCode，升级后旧文件不会顶替新片源。 */
+    /** 先看用户上传的素材，没有再走内置 asset。
+     *
+     *  上传文件已经在应用私有目录里，不需要再拷一次；内置那份仍然要拷到 cache ——
+     *  `openFd` 只对未压缩资产成立，一旦哪天被打包压缩，启动画面就会在车上变黑。 */
     private fun prepareFile(context:Context):File?{
+        SplashAsset.current(context)?.takeIf{SplashAsset.isVideo(it)}?.let{file->
+            LocalVideoDisplay.note("splash video from uploaded asset ${file.name} ${file.length()}B")
+            return file
+        }
         val target=File(context.cacheDir,"splash-"+BuildConfig.VERSION_CODE+".mp4")
         if(target.isFile&&target.length()>0L)return target
         return try{

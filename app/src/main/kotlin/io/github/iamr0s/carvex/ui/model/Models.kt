@@ -81,6 +81,12 @@ data class Settings(
     val scanIntervalSec: Int = 15,
     val methods: Set<Method> = setOf(Method.Bluetooth),
     val theme: ThemeMode = ThemeMode.System,
+    /** 画质档位：每像素每帧分到的比特数，0 标准 / 1 清晰 / 2 极致。
+     *  默认 1：720p 下标准档的码率压不住整屏文字，边缘全落在量化噪声里。 */
+    val videoQuality: Int = 1,
+    /** 三路音频分离（实验）：媒体让出 type 100，语音才有自己的那一条。默认关，
+     *  因为它要改动已经在出声的配置，只有实车确认 102 也能出声后才能变成默认。 */
+    val separateAudioLanes: Boolean = false,
     // 实验认证 / 静帧重发 / 音频投送 / 音频明文 曾有对应的界面开关，现已在 UI 上去掉：
     // 前两个必须开、第三个是正常功能、第四个只是一次性诊断。它们仍留在 [BridgeStore] 的
     // Options 里（要落盘、要能在 run-as 下手改），只是不再经过 UI 状态。

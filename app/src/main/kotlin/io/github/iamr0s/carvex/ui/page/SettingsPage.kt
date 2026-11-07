@@ -7,7 +7,10 @@ import io.github.iamr0s.carvex.ui.screen.Nav
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -34,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -48,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import io.github.iamr0s.carvex.ShizukuBluetoothMac
+import io.github.iamr0s.carvex.SplashAsset
 import io.github.iamr0s.carvex.ui.model.DeviceViewModel
 import io.github.iamr0s.carvex.ui.model.Method
 import io.github.iamr0s.carvex.ui.model.ThemeMode
@@ -218,6 +223,102 @@ fun SettingsPage(
                         ),
                     ) { Text(stringResource(mode.labelRes)) }
                 }
+            }
+        }
+
+        // 音频路由：车机的音量确实是媒体/小爱/导航三路分的，但这三条声音要先落到三个不同的
+        // 流类型上才分得开。默认关 —— 它改的是已经在出声的配置。
+        SectionLabel("音频路由")
+        Panel {
+            SwitchRow("三路音频分离（实验）", s.separateAudioLanes) { v -> vm.setSeparateAudioLanes(v) }
+            Text(
+                "关：媒体占 100、导航占 101，小爱没有自己的流，只能并进导航那一条（一次只有一个人说话）。" +
+                    "开：媒体改走 102，把 100 让给小爱，三条流各占一个类型，车机那三个音量才真正对得上。" +
+                    "开关改动在下次连接生效；开之前请先看「会话诊断」里车机提供了几条路由 —— " +
+                    "只有两条 type 的话，怎么改都分不开。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+
+        // 画质：车机画面糊的时候，剩下的唯一变量就是码率。档位直接乘在像素率上，
+        // 所以换分辨率时码率会跟着走，不会出现"画布变大、每像素变少"的二次退化。
+        SectionLabel("画质（码率）")
+        Panel {
+            val labels = listOf("标准", "清晰", "极致")
+            SingleChoiceSegmentedButtonRow(Modifier
+                .fillMaxWidth()
+                .padding(12.dp)) {
+                labels.forEachIndexed { index, label ->
+                    SegmentedButton(
+                        selected = s.videoQuality == index,
+                        onClick = { vm.setVideoQuality(index) },
+                        shape = SegmentedButtonDefaults.itemShape(index = index, count = labels.size),
+                    ) { Text(label) }
+                }
+            }
+            Text(
+                "码率按像素数换算：标准 0.13、清晰 0.20、极致 0.30 bit/像素/帧。" +
+                    "720p/30 分别约 3.6 / 5.5 / 8.3 Mbps。画面发虚就往上调一档；" +
+                    "调高后若出现卡顿，说明链路带宽不够，调回来即可。改动在下次连接车机时生效。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+
+        // 启动画面素材：连上车机时车机屏幕上先放的那段画面。
+        // 上传的文件复制进私有目录（SAF 的授权只在当次进程内有效，直接引用原文件会在下次
+        // 连接时失效），5 MB 以内；清掉就回到内置视频。
+        SectionLabel("启动画面素材")
+        Panel {
+            val app = LocalContext.current.applicationContext
+            var refresh by remember { mutableIntStateOf(0) }
+            var message by remember { mutableStateOf<String?>(null) }
+            val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                if (uri != null) {
+                    val error = SplashAsset.save(app, uri)
+                    message = if (error == null) "已替换：下次连接车机时生效" else error
+                    refresh++
+                }
+            }
+            ListItem(
+                headlineContent = { Text("当前使用") },
+                supportingContent = { Text(remember(refresh) { SplashAsset.describe(app) }) },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            )
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = { picker.launch(arrayOf("video/*", "image/*")) },
+                    modifier = Modifier.weight(1f),
+                ) { Text("选择视频或图片") }
+                OutlinedButton(
+                    onClick = {
+                        SplashAsset.clear(app)
+                        message = "已恢复内置视频"
+                        refresh++
+                    },
+                    modifier = Modifier.weight(1f),
+                ) { Text("恢复默认") }
+            }
+            Text(
+                "支持 mp4 / webm / mov 视频与 jpg / png / webp 图片，单个文件不超过 5 MB。" +
+                    "视频静音播放；图片按原比例完整显示。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            message?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
             }
         }
 

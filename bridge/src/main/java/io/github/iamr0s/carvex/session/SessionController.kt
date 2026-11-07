@@ -34,15 +34,20 @@ private const val FAIL="CarVexFail"
 
 private const val MIN_BITRATE=1_000_000
 
-/** 按像素数推初始码率：每像素每帧 0.13 bit，最低 1 Mbps。
- *  例：1024x600@30≈2.4 Mbps、720p30≈3.6 Mbps、1080p30≈8.1 Mbps。
+/** 每像素每帧的比特数，按画质档位；单位是 1/100 bit，全部整数运算。
+ *  0.13 是"能认出画面"，0.20 让 720p 的 UI 文字站得住，0.30 是给别人看视频用的余量。 */
+private val VIDEO_QUALITY_BITS_PER_HUNDRED = longArrayOf(13L, 20L, 30L)
+
+/** 按像素数推初始码率：每像素每帧 [VIDEO_QUALITY_BITS_PER_HUNDRED] 指定的比特数，最低 1 Mbps。
+ *  例：标准档 1024x600@30≈2.4 Mbps、720p30≈3.6 Mbps、1080p30≈8.1 Mbps。
  *
  *  关键在"按像素数"这四个字：分辨率一变，码率必须同比例跟着变，否则换到大画布就是拿同一个
  *  码率摊到更多像素上，画面反而更糊。上限 12 Mbps 与 [VideoRatePolicy] 自己的天花板一致 ——
  *  再往上，手机热点这条链路也吃不下，加码率只会换成排队延迟。 */
-private fun nominalBitrate(width:Int,height:Int,fps:Int):Int {
+private fun nominalBitrate(width:Int,height:Int,fps:Int,quality:Int):Int {
+    val bits=VIDEO_QUALITY_BITS_PER_HUNDRED[quality.coerceIn(0,VIDEO_QUALITY_BITS_PER_HUNDRED.lastIndex)]
     val pixelFramesPerSecond=width.toLong()*height*fps
-    return (pixelFramesPerSecond*13/100).toInt().coerceIn(MIN_BITRATE,12_000_000)
+    return (pixelFramesPerSecond*bits/100).toInt().coerceIn(MIN_BITRATE,12_000_000)
 }
 
 class SessionController(
@@ -313,7 +318,14 @@ class SessionController(
             val now=System.nanoTime();val f=frames.get();val b=bytes.get()
             val seconds=(now-measuredAt)/1_000_000_000.0
             val sound=audio.snapshot()
-            if(!ended.get()&&seconds>0)BridgeStore.update(id){it.copy(frames=f,bytes=b,inputs=inputs.get(),audioBytes=audioBytes.get(),audioPackets=sound.received,audioUnsentPackets=sound.dropped,audioForwardedBytes=sound.forwardedBytes,microphoneBytes=sound.microphoneBytes,
+            // 诊断面板的音频三行：每一路落在哪条路由、SETUP 成没成、发了多少包。
+            // 跑在定时器线程上，任何一轮取值失败都不能拖垮统计，所以整段包在 runCatching 里。
+            val lanes=runCatching{
+                val base=activeAir?.audioLanes()?:emptyList()
+                val merged=audio.laneAssignment().filter{(category,lane)->category!=lane}
+                if(merged.isEmpty())base else base+("宿主："+merged.entries.joinToString("、"){"类别"+it.key+" 并入通道"+it.value})
+            }.getOrDefault(emptyList())
+            if(!ended.get()&&seconds>0)BridgeStore.update(id){it.copy(frames=f,bytes=b,inputs=inputs.get(),audioBytes=audioBytes.get(),audioPackets=sound.received,audioUnsentPackets=sound.dropped,audioForwardedBytes=sound.forwardedBytes,microphoneBytes=sound.microphoneBytes,audioLanes=lanes,
                 sentFps=(f-measuredFrames)/seconds,sentMbps=(b-measuredBytes)*8/seconds/1_000_000,
                 encodedFps=(encoded.get()-measuredEncoded)/seconds,droppedFrames=dropped.get(),queueMs=queueMs.getAndSet(0),writeMs=writeMs.getAndSet(0),idrRequests=idr.get())}
             measuredAt=now;measuredFrames=f;measuredBytes=b;measuredEncoded=encoded.get()
@@ -989,7 +1001,8 @@ class SessionController(
             cutoverTimer.cancel(false)
 
             receiverAudio.set(air.receiverAudio)
-            BridgeStore.update(id){it.copy(receiverAudioEntries=air.receiverAudio.size)}
+            BridgeStore.update(id){it.copy(receiverAudioEntries=air.receiverAudio.size,
+                audioRoutes=runCatching{air.advertisedAudioRoutes()}.getOrDefault(emptyList()))}
             phase(Stage.SETUP,15000){
                 val activeScreen=screen
                 if(activeScreen==null){
@@ -1046,13 +1059,13 @@ class SessionController(
                 val normalizedHint=hostHint?.let{raw->
                     if(hintPixels>0&&hintPixels!=actualPixels)(raw.toLong()*actualPixels/hintPixels).toInt() else raw
                 }
-                val nominal=nominalBitrate(hostWidth,hostHeight,fps)
+                val nominal=nominalBitrate(hostWidth,hostHeight,fps,o.videoQuality)
                 val candidates=listOfNotNull(normalizedHint,nominal)
                 var bitrate=candidates.max()
                 bitrate=videoCeiling?.let{bitrate.coerceAtMost(it)} ?: bitrate
                 bitrate=bitrate.coerceAtLeast(MIN_BITRATE)
                 BridgeStore.log(id,"Video bitrate="+bitrate+" candidates="+candidates+
-                    " (hostHint="+hostHint+" normalized="+normalizedHint+" nominal="+nominal+
+                    " (quality="+o.videoQuality+" hostHint="+hostHint+" normalized="+normalizedHint+" nominal="+nominal+
                     " hintPixels="+hintPixels+" actualPixels="+actualPixels+" codecCeiling="+videoCeiling+")")
                 fun makeEncoder(rate:Int)=VideoEncoder(hostWidth,hostHeight,rate,bitrate,format,r,{b,config,pts->air.send(b,config,pts)},{n->
                     val count=frames.incrementAndGet();bytes.addAndGet(n.toLong())
@@ -1089,7 +1102,11 @@ class SessionController(
                     frontSurface=o.frontSurface&&hostOwnsDisplay)
                 val v=r.own(makeEncoder(fps));video=v
                 BridgeStore.log(id,"${"AVC selected name="}${v.encoderName}${" hardware="}${v.hardwareAccelerated}${" size="}${hostWidth}${"x"}${hostHeight}${" fps="}${fps}${" bitrate="}${v.initialBitrate}")
-                BridgeStore.update(id){it.copy(width=hostWidth,height=hostHeight,targetFps=fps,maxFps=limit,targetBitrate=v.initialBitrate)}
+                BridgeStore.update(id){it.copy(width=hostWidth,height=hostHeight,targetFps=fps,maxFps=limit,
+                    targetBitrate=v.initialBitrate,encoderName=v.encoderName,
+                    receiverWidth=activeScreen.width,receiverHeight=activeScreen.height,
+                    suggestedWidth=queriedWidth,suggestedHeight=queriedHeight,
+                    aspectPercent=aspectErrorPercent,suggestionAccepted=acceptSuggestion)}
                 v.start()
                 // Observation only, once per session: ask the host what it offers and record the replies.
                 // Neither answer changes local behaviour yet - they are here to be read off a real car.

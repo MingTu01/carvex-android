@@ -125,6 +125,10 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
     private val audioStreams=AudioStreamLifecycle()
     /** 心跳用：按 category 记已建好的发送端，读它的包数与最后一包时刻。 */
     private val audioTransports=java.util.concurrent.ConcurrentHashMap<Int,NegotiatedAudioTransport>()
+    /** 「会话诊断」用：每一路音频最终落在哪条路由、什么格式。 */
+    private val audioLaneRoutes=java.util.concurrent.ConcurrentHashMap<Int,String>()
+    /** 每一路最近一次的失败原因；SETUP 成功后清空。 */
+    private val audioLaneErrors=java.util.concurrent.ConcurrentHashMap<Int,String>()
     @Volatile private var videoFrames=0L
     @Volatile private var lastVideoNanos=0L
     /** Local recovery policy: remember explicit SETUP refusals for this session only.
@@ -135,6 +139,47 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         2->rejectedPromptRoutes
         3->rejectedSpeechRoutes
         else->null
+    }
+    /** 「会话诊断」面板：车机在 `/info` 里广告的每一条音频路由，以及它能收/能给的格式。
+     *
+     *  这张表是"三路音量能不能真的分开"的唯一依据：车机有几个不同的 `type`，我们才有可能
+     *  建出几条独立的流。只看到 100/101 两条，第三条就无处安放 —— 那不是我们没实现，
+     *  是接收端没给位置。 */
+    fun advertisedAudioRoutes():List<String> {
+        fun mask(bits:Long?):String = if(bits==null||bits==0L)"无" else
+            CarPlayAudioPlan.formats.filter{bits and it.bit!=0L}
+                .joinToString(" "){"${it.codec}/${it.rate}/${it.channels}"}
+        return receiverAudio.distinctBy{it.streamType to it.audioType}
+            .sortedWith(compareBy({it.streamType},{it.audioType}))
+            .map{entry->
+                val line="type="+entry.streamType+"/"+entry.audioType+" 可收["+mask(entry.outputMask)+"]"
+                if(entry.inputMask!=null&&entry.inputMask!=0L)line+" 可采["+mask(entry.inputMask)+"]" else line
+            }
+    }
+
+    /** 「会话诊断」面板的音频三行：媒体 / 导航 / 语音。
+     *
+     *  车机的音量就是按这三路分的（媒体、小爱、导航各自可调），所以面板必须按同一把尺子显示，
+     *  否则"到底有没有分开"永远只能靠听。判据很直接：
+     *  - 三种不同的 type → 三条独立的流，车机能分别调音量；
+     *  - 两路写进同一个 type → 接收端只有一个 `(type, purpose)` 上下文，实际上是混着走的。
+     *
+     *  没建起来的也显示，因为"哪一路没接上"正是要看的东西。 */
+    fun audioLanes():List<String> {
+        val labels=mapOf(1 to "媒体",2 to "导航",3 to "语音")
+        return (1..3).map{category->
+            val name=labels[category]?:("类别"+category)
+            val route=audioLaneRoutes[category]
+            val error=audioLaneErrors[category]
+            val transport=audioTransports[category]
+            when{
+                transport!=null&&transport.ready->name+"："+route+" · 已连接，已发 "+transport.packetsSent+" 包"
+                transport!=null->name+"："+route+" · 已断开"
+                route!=null->name+"："+route+" · SETUP 未完成"+(if(error!=null)"（"+error+"）" else "")
+                error!=null->name+"：未建立（"+error+"）"
+                else->name+"：未建立"
+            }
+        }
     }
     /** 每条流响应里的 streamID，仅用于诊断；固件音频关闭路径不把它写入 TEARDOWN。 */
     private val audioStreamIds=java.util.concurrent.ConcurrentHashMap<String,Long>()
@@ -1094,7 +1139,8 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
     }
     suspend fun createMediaAudio(format:PcmFormat):NegotiatedAudioTransport=createAudio(1,format)
     fun bootstrapAudioPlan():List<CarPlayAudioPlan.Selection> =
-        CarPlayAudioPlan.bootstrapPlayback(receiverAudio,PcmFormat(48000,2)){format->
+        CarPlayAudioPlan.bootstrapPlayback(receiverAudio,PcmFormat(48000,2),
+            separateLanes=options.separateAudioLanes){format->
             runCatching{AudioCodecSupport.encoders(format).isNotEmpty()}.getOrDefault(false)
         }
     /** Who owns main audio right now, for status and logs. */
@@ -1130,7 +1176,8 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         val selected=CarPlayAudioPlan.selectPlayback(receiverAudio,category,source,
             requireDuplex=wantsInput,supportsCapture={format->
                 format.codec==CarPlayAudioPlan.Codec.PCM16||runCatching{AudioCodecSupport.decoders(format).isNotEmpty()}.getOrDefault(false)
-            },excludedRoutes=rejectedRoutes(category)?:emptySet()){format->
+            },excludedRoutes=rejectedRoutes(category)?:emptySet(),
+            separateLanes=options.separateAudioLanes){format->
             val encoders=runCatching{AudioCodecSupport.encoders(format)}.getOrDefault(emptyList())
             log("Audio category="+category+" local "+format.codec+"/"+format.rate+"/"+format.channels+" encoders="+encoders.joinToString())
             encoders.isNotEmpty()
@@ -1138,6 +1185,9 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
         val route=selected.route
         val candidate=selected.format
         log("Audio category="+category+" selected type="+route.type+"/"+route.purpose+" codec="+candidate.codec+"/"+candidate.rate+"/"+candidate.channels)
+        // 诊断面板的音频行就靠这一条：写的是"这一路落在哪条路由、什么格式"。
+        // 两路写进同一个 type 就是没分开——接收端一个 (type,purpose) 只有一条流。
+        audioLaneRoutes[category]="type="+route.type+"/"+route.purpose+" "+candidate.codec+"/"+candidate.rate+"/"+candidate.channels
         if(category==1){
             // 抓包诊断：媒体优先 102/media；102 无格式或本机无编码器时回退 100/media。
             // 有的车机按 type 而不是 audioType 分类，回退到 100 时会把音乐显示成语音。
@@ -1368,6 +1418,7 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             transportRef.set(transport)
             val combined=microphone?.let{DuplexAudioTransport(transport,it)}?:transport
             audioTransports[category]=transport
+            audioLaneErrors.remove(category)
             check(transport.ready&&!released.get()){"Audio transport closed during setup"}
             resources.own(combined)
             // T1：音频流是在 `prepare()` 的 RECORD 之后才 SETUP 的（真机日志：RECORD cseq=10
@@ -1382,6 +1433,10 @@ class AirSession(private val context:Context,private val path:NetworkPath,privat
             return combined
         }catch(t:Exception){
             microphone?.close()
+            // 诊断面板要能直接看到"这一路是被车机拒的还是被我们自己判死的"，
+            // 所以失败原因按类别留一条，SETUP 成功后会被清掉。
+            audioLaneErrors[category]=if(t is RtspClient.StatusException)"车机拒绝 status="+t.status
+                else t.javaClass.simpleName+": "+(t.message?:"")
             udp.close();rtcp.close();transportRef.get()?.close();released.set(true)
             if(audioStreams.beginClose(lease)){
                 // No teardown for an explicit refusal: another purpose may still use this type.

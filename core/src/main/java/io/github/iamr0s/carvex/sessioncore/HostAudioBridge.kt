@@ -151,6 +151,11 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
         }finally{routeLock.unlock()}
     }
     fun categories():Set<Int> = active.get().filterValues{it.transport.ready}.keys
+    /** 「会话诊断」用：宿主送来的每个类别实际落在哪条通道上。
+     *
+     *  只有合并发生时键和值才不同（`3 -> 2`）。面板拿它来点明"语音没有自己的流、并在导航里"，
+     *  否则用户看到两条流都正常，却还是分不开音量，没法判断卡在哪一层。 */
+    fun laneAssignment():Map<Int,Int> = (1..3).mapNotNull{category->routeFor(category)?.let{category to it}}.toMap()
     fun testFormat(category:Int):PcmFormat?=active.get()[category]?.takeIf{it.transport.ready}?.formats?.get(category)
     suspend fun sendTest(category:Int,pcm:ByteArray,format:PcmFormat):Boolean {
         val binding=active.get()[category]?:return false

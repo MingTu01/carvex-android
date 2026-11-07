@@ -38,7 +38,20 @@ data class SessionState(val id:String="",val stage:Stage=Stage.IDLE,val detail:S
                         val carWithAudioProbeRunning:Boolean=false,val carWithAudioProbeStatus:String="尚未测试 CarWith 音频输入",
                         val hostMusic:String="尚未收到宿主机音乐信息",val hostMusicProgress:Long=0,
                         val hostHud:String="尚未收到宿主机导航数据",val hostNightMode:Int?=null,
-                        val hostUiRequest:String="尚未收到车机界面请求",val hostOptionalActions:Int=0)
+                        val hostUiRequest:String="尚未收到车机界面请求",val hostOptionalActions:Int=0,
+                        /** 「会话诊断」面板的数据源。全部由会话层实测回填，不从日志里反推。
+                         *
+                         *  分成两组，因为它们回答的是两个不同的问题：
+                         *  - 分辨率这组回答"画面为什么糊"：车机自报是多少、车机在 encode_format 里
+                         *    建议多少、我们最后按多少编。三者不一致时，中间一定有一次缩放。
+                         *  - [audioLanes] 回答"哪一路声音没接上"：每行对应一路（媒体/导航/语音），
+                         *    写明它落在哪条路由、什么格式、SETUP 成没成、已经发了多少包。 */
+                        val receiverWidth:Int=0,val receiverHeight:Int=0,
+                        val suggestedWidth:Int=0,val suggestedHeight:Int=0,
+                        val aspectPercent:Long=-1,val suggestionAccepted:Boolean=false,
+                        val encoderName:String="",val audioLanes:List<String> = emptyList(),
+                        /** 车机广告的全部音频路由（`type/purpose` + 可收格式）。 */
+                        val audioRoutes:List<String> = emptyList())
 data class Device(val name:String,val address:String)
 /** 学习模式下捕获到的一条 CarPlay 按键事件：只给界面做诊断记录，不参与运行时转发。 */
 data class CapturedKey(val id:String,val label:String)
@@ -108,7 +121,27 @@ data class Options(val appearance:Appearance=Appearance.SYSTEM,val color:Int=DEF
                    *  打开 = 恢复恒等映射，只在真机上需要做一次 A/B、排除"是不是 PT 这个变量"
                    *  时用。用 `run-as` 改 `shared_prefs/options.xml` 即可，不给 UI。
                    *  日志里 `Audio wire payload type ... wirePT=` 会写清实际发的是哪个。 */
-                  val audioRawWirePt:Boolean=false){
+                  val audioRawWirePt:Boolean=false,
+                  /** 画质档位：每像素每帧分到多少比特。索引 0/1/2 = 标准/清晰/极致。
+                   *
+                   *  **为什么需要这一档**：720p 画布跑起来之后车机画面仍然发虚，剩下的变量只有
+                   *  码率。原来的 0.13 bit/px 是照"能看出是画面"定的，对整屏 UI 文字偏软 ——
+                   *  文字的边缘全压在量化噪声里。这个系数直接乘在 `width*height*fps` 上，
+                   *  所以换分辨率时码率同比例跟随，不会出现"画布变大、每像素变少"的二次退化。 */
+                  val videoQuality:Int=1,
+                  /** 「三路音频分离」（实验）：让媒体改走 `102/media` 的编码路径，把 `type 100`
+                   *  让出来给语音（小爱），从而三条流各占一个 type。
+                   *
+                   *  **为什么现在不是默认开**：媒体一旦在 `100/media` 上建立 PCM 上下文，type 100
+                   *  就被占死，`100/speechRecognition` 的 SETUP 一律 400 —— 这是已经实测过的，
+                   *  也正是"小爱没声音"的根因。反过来把媒体挪到 102 能不能出声，还没有实车证据：
+                   *  102 上只有压缩编码可走（PCM 在 `wireSupported` 里被拒），而 102 的 SETUP
+                   *  即使 200 也不代表车机会解它。开这个开关就是做这一次 A/B：
+                   *  诊断面板会显示三行分别落在哪个 type，落在三个不同的 type 上才算真的分开。
+                   *
+                   *  失败会自动回退：102 上没有可用编码时，`selectPlayback` 仍然落回
+                   *  `100/media` 的 PCM，行为与关掉它时完全一致。 */
+                  val separateAudioLanes:Boolean=false){
     /**
      * Name presented to the CarPlay receiver.
      *
@@ -223,7 +256,9 @@ object BridgeStore {
             p.getBoolean("autoConnect",default.autoConnect),p.getBoolean("audioPlaintext",default.audioPlaintext),
             p.getBoolean("audioEnabled",default.audioEnabled),
             p.getFloat("audioVolumeDb",default.audioVolumeDb.toFloat()).toDouble(),
-            p.getBoolean("audioRawWirePt",default.audioRawWirePt))
+            p.getBoolean("audioRawWirePt",default.audioRawWirePt),
+            videoQuality=p.getInt("videoQuality",default.videoQuality).coerceIn(0,2),
+            separateAudioLanes=p.getBoolean("separateAudioLanes",default.separateAudioLanes))
         scope.launch {
             val f=File(context.filesDir,"diagnostic.log")
             val saved=synchronized(logFileLock){
@@ -255,6 +290,8 @@ object BridgeStore {
     @Synchronized fun configure(o:Options){
         // 重连间隔的区间收在 Options 里，避免这里和界面各写一份、改一处忘一处。
         require(o.dpi in 120..320 && o.retryIntervalSeconds in Options.RETRY_INTERVAL_RANGE)
+        // 画质档位是枚举索引，越界会让码率算出一个没有意义的值，所以在这里就挡住。
+        require(o.videoQuality in 0..2){"画质档位只能是 0/1/2"}
         // The receiver, Bonjour and iAP2 all reject oversized or control-character names.
         val name=o.deviceName.trim()
         require(name.length<=Options.DEVICE_NAME_MAX&&name.none{it.isISOControl()}){"${"设备名称最多 "}${Options.DEVICE_NAME_MAX}${" 个字符，且不能包含控制字符"}"}
@@ -292,6 +329,8 @@ object BridgeStore {
             // NaN 落盘会变成 Float.NaN，读回来还是 NaN，正好当"不发音量命令"的哨兵值。
             .putFloat("audioVolumeDb",normalized.audioVolumeDb.toFloat())
             .putBoolean("audioRawWirePt",normalized.audioRawWirePt)
+            .putInt("videoQuality",normalized.videoQuality)
+            .putBoolean("separateAudioLanes",normalized.separateAudioLanes)
             .remove("pairingPin").remove("airPlaySecurity").apply()
     }
     @Synchronized fun update(id:String,transform:(SessionState)->SessionState){if(mutable.value.id==id)mutable.value=transform(mutable.value)}

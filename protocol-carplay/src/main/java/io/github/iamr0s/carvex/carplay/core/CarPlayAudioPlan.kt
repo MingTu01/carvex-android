@@ -149,6 +149,8 @@ object CarPlayAudioPlan {
         preferPcm:Boolean=AudioDebugConfig.pcmMedia,
         preferPcmAlert:Boolean=AudioDebugConfig.pcmAlert,
         preferSpeechAlt:Boolean=AudioDebugConfig.speechAltPcm,
+        /** 三路分离：媒体让出 `type 100`，语音才有自己的那一条。见 [Options.separateAudioLanes]。 */
+        separateLanes:Boolean=false,
         supportsEncoded:(Format)->Boolean):Selection? {
         val choices=when(category){
             1->listOf(media,mediaLowLatency)
@@ -163,10 +165,20 @@ object CarPlayAudioPlan {
         //
         // category 3 的 PCM 只走 `101/default`，**绝不**走 `100/speechRecognition`：
         // 那会顶掉主音频的 type 100 上下文（20032 的代价）。
+        //
+        // 分离模式下这条约束换了个方向：媒体不再在 `type 100` 上建 PCM 上下文，于是
+        // `100/speechRecognition` 反而成了语音唯一"属于自己的"那条流。媒体若在 102 上
+        // 建不起来，下面的 choices 循环会自然落回 `100/media` 的 PCM，与关闭时行为一致。
         val pcmRoutes=when(category){
-            1->if(preferPcm)listOf(mediaLowLatency) else emptyList()
+            1->if(preferPcm&&!separateLanes)listOf(mediaLowLatency) else emptyList()
             2->if(preferPcm&&preferPcmAlert)listOf(alternate) else emptyList()
-            3->if(preferSpeechAlt)listOf(speechAlternate) else emptyList()
+            3->when{
+                // 两个落点都留着：先要自己的 `100/speechRecognition`，被 400 拒了就退回
+                // `101/default` 和导航共用一条 —— "分不开但有声"好过没声音。
+                separateLanes->listOf(assistant,speechAlternate)
+                preferSpeechAlt->listOf(speechAlternate)
+                else->emptyList()
+            }
             else->emptyList()
         }
         for(route in pcmRoutes){
@@ -219,10 +231,12 @@ object CarPlayAudioPlan {
         preferPcm:Boolean=AudioDebugConfig.pcmMedia,
         preferPcmAlert:Boolean=AudioDebugConfig.pcmAlert,
         preferSpeechAlt:Boolean=AudioDebugConfig.speechAltPcm,
+        separateLanes:Boolean=false,
         supportsEncoded:(Format)->Boolean):List<Selection> =
         listOf(2,1).mapNotNull{category->
             selectPlayback(entries,category,source,requireDuplex=category==3,
                 preferPcm=preferPcm,preferPcmAlert=preferPcmAlert,preferSpeechAlt=preferSpeechAlt,
+                separateLanes=separateLanes,
                 supportsEncoded=supportsEncoded)
         }.distinctBy{it.route.type to it.route.purpose}
     /** 麦克风（车机采集方向）的候选序。

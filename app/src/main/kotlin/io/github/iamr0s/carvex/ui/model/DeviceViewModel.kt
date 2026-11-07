@@ -55,6 +55,14 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         observeBridgeState()
         observeBridgeLogs()
         BridgeStore.log("ui", appContext.getString(R.string.log_app_started))
+        // 画质档位存在界面的 prefs 里，而会话读的是 BridgeStore 的 Options。两处只在改的时候
+        // 同步会出现"装了新版本但会话还在用旧档位"，所以启动时推一次，让盘上的选择真正生效。
+        runCatching {
+            val quality = _state.value.settings.videoQuality.coerceIn(0, 2)
+            if (BridgeStore.options.value.videoQuality != quality) {
+                BridgeStore.configure(BridgeStore.options.value.copy(videoQuality = quality))
+            }
+        }
         refresh()
     }
 
@@ -273,8 +281,20 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
         BridgeStore.log("ui", appContext.getString(R.string.log_settings_changed))
     }
 
-    fun toggleMethod(method: Method) {
-        if (method !in RealDeviceTransport.supportedMethods) {
+    /** 画质档位：0 标准 / 1 清晰 / 2 极致。写进 Options，下一次连接按新码率编码。 */
+    fun setVideoQuality(index: Int) {
+        val quality = index.coerceIn(0, 2)
+        updateSettings("video.quality=$quality") { it.copy(videoQuality = quality) }
+        BridgeStore.configure(BridgeStore.options.value.copy(videoQuality = quality))
+    }
+
+    /** 三路音频分离（实验开关）：写进 Options，下一次连接时按新的路由策略建流。 */
+    fun setSeparateAudioLanes(on: Boolean) {
+        updateSettings("audio.separateLanes=$on") { it.copy(separateAudioLanes = on) }
+        BridgeStore.configure(BridgeStore.options.value.copy(separateAudioLanes = on))
+    }
+
+    fun toggleMethod(method: Method) {        if (method !in RealDeviceTransport.supportedMethods) {
             say(appContext.getString(R.string.method_not_supported, appContext.getString(method.labelRes)))
             return
         }
@@ -309,6 +329,8 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             ?: RealDeviceTransport.supportedMethods,
         theme = runCatching { ThemeMode.valueOf(prefs.getString("theme", "System") ?: "System") }
             .getOrDefault(ThemeMode.System),
+        videoQuality = prefs.getInt("videoQuality", 1).coerceIn(0, 2),
+        separateAudioLanes = prefs.getBoolean("separateLanes", false),
     )
 
     private fun saveSettings(s: Settings) {
@@ -320,6 +342,8 @@ class DeviceViewModel(app: Application) : AndroidViewModel(app) {
             .putInt("interval", s.scanIntervalSec)
             .putStringSet("methods", s.methods.map { it.mode.id }.toSet())
             .putString("theme", s.theme.name)
+            .putInt("videoQuality", s.videoQuality.coerceIn(0, 2))
+            .putBoolean("separateLanes", s.separateAudioLanes)
             .apply()
     }
 
