@@ -44,6 +44,46 @@ class VideoEncoder(val width:Int,val height:Int,fps:Int,bitrate:Int,hostFormat:B
          *  每秒才醒一次，最早也只能在 1 s 补帧。这次检查只是读两个 Long 做比较，不开线程、
          *  不分配对象，四次每秒的代价可以忽略。 */
         const val IDLE_TICK_MS=250L
+        /** `outputFormat` 报的 profile 既可能是 [MediaCodecInfo.CodecProfileLevel] 的位标志
+         *  （1/2/8…），也可能是原始 `profile_idc`（66/77/100）—— 不同厂商各写各的。
+         *
+         *  两种都认，并且**把原始数字一起打出来**：认错名字最多难看，把 66 说成 Baseline、
+         *  把 100 说成 High 都还能对上，但把 32 当成"Level 2"当"Level 3.2"就会误导判断。
+         *  所以标签只做辅助，括号里的数字才是判据。 */
+        fun avcProfileLabel(value:Int):String {
+            val name=when(value){
+                0x01,66->"Baseline";0x02,77->"Main";0x04,88->"Extended"
+                0x08,100->"High";0x10,110->"High10";0x20,122->"High422";0x40,244->"High444"
+                else->null
+            }
+            return when{
+                value<=0->"未报"
+                name!=null->name+"("+value+")"
+                value in 10..62->(value/10).toString()+"."+(value%10)+"(idc)"
+                else->"#"+value
+            }
+        }
+        fun avcLevelLabel(value:Int):String {
+            val name=when(value){
+                0x01->"1";0x02->"1b";0x04->"1.1";0x08->"1.2";0x10->"1.3"
+                0x20->"2";0x40->"2.1";0x80->"2.2"
+                0x100->"3";0x200->"3.1";0x400->"3.2"
+                0x800->"4";0x1000->"4.1";0x2000->"4.2"
+                0x4000->"5";0x8000->"5.1";0x10000->"5.2"
+                0x20000->"6";0x40000->"6.1";0x80000->"6.2"
+                else->null
+            }
+            return when{
+                value<=0->"未报"
+                name!=null->name+"("+value+")"
+                value in 10..62->(value/10).toString()+"."+(value%10)+"(idc)"
+                else->"#"+value
+            }
+        }
+        fun bitrateModeLabel(value:Int):String = when(value){
+            -1->"未报";0->"VBR";1->"CBR";2->"CQ"
+            else->"#"+value
+        }
         private data class Candidate(val info:MediaCodecInfo,val caps:MediaCodecInfo.CodecCapabilities)
         private fun candidates(hostFormat:Bundle?):List<Candidate> {
             return MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
@@ -109,6 +149,19 @@ class VideoEncoder(val width:Int,val height:Int,fps:Int,bitrate:Int,hostFormat:B
     val initialBitrate:Int
     val encoderName:String get()=codec.name
     val hardwareAccelerated:Boolean get()=codec.codecInfo.isHardwareAccelerated
+    /** 实际生效的编码参数，只有 [start] 之后才拿得到 —— MediaCodec 在校验通过前不给 outputFormat。
+     *
+     *  为什么单独采这三项：车机没有显式要求 `profile`/`level`/`bitrate-mode` 时，它们取编码器的
+     *  默认值，而**同一个码率下 Baseline 和 High 的差距是肉眼可见的**（CABAC、8×8 变换、更强的
+     *  运动矢量预测全都没有）。所以"画面糊"必须拆成两个变量看：码率给够没有、给的是什么 profile。
+     *  以前这两件事在诊断里只有一个答案，等于没法判断。 */
+    private fun outputInt(key:String):Int=runCatching{codec.outputFormat.getInteger(key)}.getOrDefault(-1)
+    val avcProfile:Int get()=outputInt(MediaFormat.KEY_PROFILE)
+    val avcLevel:Int get()=outputInt(MediaFormat.KEY_LEVEL)
+    val avcBitrateMode:Int get()=outputInt(MediaFormat.KEY_BITRATE_MODE)
+    /** 编码参数的短标签，给诊断面板和 logcat 用。取不到就写「未报」，不猜。 */
+    fun avcParams():String = "profile="+avcProfileLabel(avcProfile)+
+        " level="+avcLevelLabel(avcLevel)+" mode="+bitrateModeLabel(avcBitrateMode)
     @Volatile private var bitrateSupported=true
     private var producer:Job?=null
     private var consumer:Job?=null

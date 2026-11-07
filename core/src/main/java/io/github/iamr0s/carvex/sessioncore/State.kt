@@ -50,6 +50,10 @@ data class SessionState(val id:String="",val stage:Stage=Stage.IDLE,val detail:S
                         val suggestedWidth:Int=0,val suggestedHeight:Int=0,
                         val aspectPercent:Long=-1,val suggestionAccepted:Boolean=false,
                         val encoderName:String="",val audioLanes:List<String> = emptyList(),
+                        /** 实际生效的 AVC 参数（profile / level / 码率模式），[encoderName] 报不出来。
+                         *  「画面糊」必须拆成两个变量看：码率够不够是一件事，给的是什么 profile 是
+                         *  另一件事 —— 同码率下 Baseline 少了 CABAC 和 8×8 变换，文字边缘会明显发虚。 */
+                        val encoderParams:String="",
                         /** 车机广告的全部音频路由（`type/purpose` + 可收格式）。 */
                         val audioRoutes:List<String> = emptyList())
 data class Device(val name:String,val address:String)

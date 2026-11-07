@@ -340,7 +340,8 @@ class SessionController(
                         android.util.Log.i("CarVexDiag","video receiver="+st.receiverWidth+"x"+st.receiverHeight+
                             " suggested="+st.suggestedWidth+"x"+st.suggestedHeight+" accepted="+st.suggestionAccepted+
                             " aspect="+st.aspectPercent+"% host="+st.width+"x"+st.height+
-                            " codec="+st.encoderName+" bitrate="+st.targetBitrate+" fps="+st.targetFps)
+                            " codec="+st.encoderName+" bitrate="+st.targetBitrate+" fps="+st.targetFps+
+                            " "+st.encoderParams)
                         lanes.forEach{android.util.Log.i("CarVexDiag","lane "+it)}
                         st.audioRoutes.forEach{android.util.Log.i("CarVexDiag","route "+it)}
                     }
@@ -1125,6 +1126,11 @@ class SessionController(
                     suggestedWidth=queriedWidth,suggestedHeight=queriedHeight,
                     aspectPercent=aspectErrorPercent,suggestionAccepted=acceptSuggestion)}
                 v.start()
+                // 编码参数只有 start 之后才由 MediaCodec 报回。同码率下 profile 决定画质上限，
+                // 所以它和码率必须分开显示 —— 否则"码率给到 8 Mbps 还是糊"永远没有答案。
+                val params=runCatching{v.avcParams()}.getOrDefault("未报")
+                BridgeStore.log(id,"AVC parameters "+params)
+                BridgeStore.update(id){it.copy(encoderParams=params)}
                 // Observation only, once per session: ask the host what it offers and record the replies.
                 // Neither answer changes local behaviour yet - they are here to be read off a real car.
                 sessionScope.launch{

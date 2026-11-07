@@ -57,6 +57,10 @@ fun SessionDiagnostics(modifier: Modifier = Modifier) {
             "${s.width}×${s.height}" + (if (s.suggestionAccepted) "（采用建议）" else "（采用车机自报）"),
         )
         KeyValueRow("编码器", s.encoderName.ifBlank { "尚未选择" })
+        // profile / level / 码率模式：和码率是两件事。码率给到 8 Mbps 还糊，答案经常在这里。
+        if (s.encoderParams.isNotBlank() && s.encoderParams != "未报") {
+            KeyValueRow("编码参数", s.encoderParams)
+        }
         KeyValueRow(
             "码率 / 帧率",
             if (s.targetBitrate > 0) {
@@ -67,8 +71,10 @@ fun SessionDiagnostics(modifier: Modifier = Modifier) {
         )
         KeyValueRow(
             "画面是否缩放",
+            // 只有"两边尺寸一样"才是确定的 1:1。不一致时谁放大谁缩小取决于车机怎么摆它的
+            // 显示区，我们这边看不到 —— 所以只说"不一致"，不编一个方向出来。
             if (s.receiverWidth > 0 && s.receiverWidth != s.width) {
-                "${s.receiverWidth}×${s.receiverHeight} → ${s.width}×${s.height}，中间有一次缩放"
+                "车机自报 ${s.receiverWidth}×${s.receiverHeight}，编码 ${s.width}×${s.height}，车机侧还会缩/放一次"
             } else if (s.receiverWidth > 0) {
                 "1:1，没有缩放"
             } else {

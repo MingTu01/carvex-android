@@ -236,8 +236,10 @@ fun SettingsPage(
         Panel {
             SwitchRow("三路音频分离（实验）", s.separateAudioLanes) { v -> vm.setSeparateAudioLanes(v) }
             Text(
-                "关：媒体占 100、导航占 101，小爱没有自己的流，只能并进导航那一条（一次只有一个人说话）。" +
-                    "开：媒体改走 102，把 100 让给小爱，三条流各占一个类型，车机那三个音量才真正对得上。" +
+                "关：媒体占 100/media，导航占 101/default，小爱没有自己的流，只能并进导航那一条" +
+                    "（一次只有一个人说话）。" +
+                    "开：媒体和导航都不动，小爱改走 101/compatibility —— 同一个 101 下的另一个会话位，" +
+                    "三条流各占一个，车机那三个音量才真正对得上。" +
                     "开关改动在下次连接生效；开之前请先看「会话诊断」里车机提供了几条路由 —— " +
                     "只有两条 type 的话，怎么改都分不开。",
                 style = MaterialTheme.typography.bodySmall,
