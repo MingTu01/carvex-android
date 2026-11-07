@@ -179,6 +179,9 @@ object BridgeStore {
     private val logFileLock=Any()
     private var diskLogGeneration=-1L // guarded by logFileLock
     private val writer=Channel<LogWrite>(512)
+    /** 会同时镜像到 logcat 的行前缀。只放音频/语音：这是在车上唯一"必须当场判定"的一条线。 */
+    private val AUDIO_LOGCAT_PREFIXES=listOf(
+        "Audio ","CarWith audio","CarPlay audio","Voice ","Audio transport","Active media key")
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     @Synchronized fun init(c:Context){
         if(::context.isInitialized)return;context=c.applicationContext
@@ -294,6 +297,20 @@ object BridgeStore {
         .replace(Regex("(?i)(password|psk|seed|secret|ssid|pairingPin|setupCode)\\s*[:=]\\s*[^,\\s]+"),"$1=<redacted>").take(500)
     @Synchronized fun log(id:String,message:String){
         val line=Instant.now().toString()+" ["+id+"] "+redact(message)
+        // 音频/语音这条路线的行同时镜像一份到 logcat。
+        //
+        // 为什么只镜像这一条线：`diagnostic.log` 只能在应用的日志页里看，而 release 包
+        // `run-as` 进不去、设备又没 root —— 「车机上某个声音没出来」这种问题必须在**当场**
+        // 用 adb 判定是宿主压根没送 PCM、还是有 PCM 但流没建起来。翻不到这一步，就只能
+        // 靠用户在两个界面之间来回描述，而那正是上一次多花一整轮排查的原因。
+        //
+        // 音量可控：这些行本来就是节流的（源侧 200 ms、宿主 5 s、RTP 200 包一行），
+        // 连车时最多几行每秒，不会把 logcat 冲掉。
+        if(AUDIO_LOGCAT_PREFIXES.any{message.startsWith(it)}){
+            // runCatching：单元测试跑在纯 JVM 上，没有 android.util.Log 的桩，
+            // 镜像失败不该让一条日志把会话带崩。
+            runCatching{android.util.Log.i("CarVexAudio","["+id+"] "+redact(message))}
+        }
         if(id==mutable.value.id){
             if(sessionStartup.size<220)sessionStartup.add(line)
             val relevant=message.startsWith("Audio category=")||message.startsWith("CarPlay audio SETUP")||

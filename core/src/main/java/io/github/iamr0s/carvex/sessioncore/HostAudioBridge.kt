@@ -42,6 +42,8 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
     private val lastPcmNanos=AtomicLongArray(4)
     private val observedHostState=AtomicIntegerArray(IntArray(4){Int.MIN_VALUE})
     private val firstPcmObserved=AtomicIntegerArray(4)
+    /** 「宿主送来了，但我们这条流压根没建」每类只报一次，见 [receive]。 */
+    private val noLaneReported=AtomicIntegerArray(IntArray(4))
     private val routeLock=Mutex()
     private val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
     private val queues=(1..3).associateWith{Channel<Block>(8)}
@@ -160,7 +162,16 @@ class HostAudioBridge(private val log:(String)->Unit,private val configureRoute:
                 " attached="+(binding!=null)+" ready="+(binding?.transport?.ready==true)+
                 "; callback observed before queue admission")
         }
-        if(binding==null||!binding.transport.ready){dropped.incrementAndGet();return}
+        if(binding==null||!binding.transport.ready){
+            dropped.incrementAndGet()
+            // 这一行是「某个声音在车机上没出来」的第一判据，所以每类必报一次。
+            // 宿主按 category 分声道，我们只建了 1/2 两条（见 CarPlayAudioPlan.bootstrapPlayback），
+            // 所以只要它把某种声音归到 3，那份 PCM 就必然落进这里 —— 此时问题不在 RTP、
+            // 不在密码、也不在音量，而是"这条流从来没建过"。
+            if(noLaneReported.compareAndSet(category,0,1))
+                log("Audio source category=$category has no established stream; the host is sending this audio on a lane we never set up, so it is dropped here and never reaches RTP")
+            return
+        }
         val queue=queues.getValue(category)
         // A fresh callback's duration is not its queue age. In particular, the host
         // supplies 120 ms speech blocks: clipping each to 100 ms loses 1/6 of speech.
