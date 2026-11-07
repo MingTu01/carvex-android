@@ -308,6 +308,8 @@ class SessionController(
         val mediaPlayback=MediaPlaybackToggle()
         val frames=AtomicLong()
         val bytes=AtomicLong()
+        /** 编码参数只在首帧之后读一次：那之前 `outputFormat` 是占位值。 */
+        val finalParamsLogged=java.util.concurrent.atomic.AtomicBoolean(false)
         val inputs=AtomicLong()
         val audioBytes=AtomicLong()
         val encoded=AtomicLong();val dropped=AtomicLong()
@@ -1030,6 +1032,12 @@ class SessionController(
                     return@phase
                 }
                 val format=h.format(activeScreen.width,activeScreen.height)
+                // 把回复里的**全部**键名打出来：这个接收端的三条帧率通道（显示描述符、这个回复、
+                // 宿主动态帧率回调）全都不提 60fps，而 CarWith 自己的设置里写着 60。要么它不走
+                // 这三条，要么用了我们没读的键名 —— 打全了才分得清是哪一种。
+                BridgeStore.log(id,"CarWith encode_format reply keys="+
+                    (format?.keySet()?.sorted()?.joinToString(",")?:"null")+
+                    " values="+format?.let{b->b.keySet().sorted().joinToString(","){k->k+"="+runCatching{b.get(k).toString()}.getOrDefault("?")}})
                 val queriedWidth=if(format?.containsKey("width")==true)format.getInt("width") else activeScreen.width
                 val queriedHeight=if(format?.containsKey("height")==true)format.getInt("height") else activeScreen.height
                 // 车机建议的画布什么时候采纳。
@@ -1087,8 +1095,19 @@ class SessionController(
                     " hintPixels="+hintPixels+" actualPixels="+actualPixels+" codecCeiling="+videoCeiling+")")
                 fun makeEncoder(rate:Int)=VideoEncoder(hostWidth,hostHeight,rate,bitrate,format,r,{b,config,pts->air.send(b,config,pts)},{n->
                     val count=frames.incrementAndGet();bytes.addAndGet(n.toLong())
-                    if(count==1L&&!ended.get())BridgeStore.update(id){
-                        if(it.stage==Stage.WAIT_FRAME)it.copy(stage=Stage.STREAMING,frames=count,bytes=bytes.get(),detail="首个视频帧已写入通道；车机画面、触摸和持续运行尚待实机确认") else it
+                    if(count==1L&&!ended.get()){
+                        BridgeStore.update(id){
+                            if(it.stage==Stage.WAIT_FRAME)it.copy(stage=Stage.STREAMING,frames=count,bytes=bytes.get(),detail="首个视频帧已写入通道；车机画面、触摸和持续运行尚待实机确认") else it
+                        }
+                        // 首帧到了，outputFormat 现在才是真的。重读一次编码参数：start() 之后
+                        // 那一份是占位值（实测把 720p 报成 Level 1b）。
+                        if(finalParamsLogged.compareAndSet(false,true)){
+                            val settled=runCatching{video?.avcParams()}.getOrNull()
+                            if(settled!=null){
+                                BridgeStore.log(id,"AVC parameters after first frame "+settled)
+                                BridgeStore.update(id){it.copy(encoderParams=settled)}
+                            }
+                        }
                     }
                 },::failure,{name,value->when(name){
                     "encoded"->encoded.addAndGet(value)
@@ -1128,8 +1147,12 @@ class SessionController(
                 v.start()
                 // 编码参数只有 start 之后才由 MediaCodec 报回。同码率下 profile 决定画质上限，
                 // 所以它和码率必须分开显示 —— 否则"码率给到 8 Mbps 还是糊"永远没有答案。
+                //
+                // 但这一刻拿到的还只是**占位值**：Android 只保证 outputFormat 在第一个输出缓冲
+                // 之后有效。实测这里把 1280x720 的流报成了 Level 1b（上限 128×96），明显不对。
+                // 所以这条只是参考，真正的那一份在首帧之后重新读（见 metric 回调）。
                 val params=runCatching{v.avcParams()}.getOrDefault("未报")
-                BridgeStore.log(id,"AVC parameters "+params)
+                BridgeStore.log(id,"AVC parameters before first frame "+params+" (provisional; MediaCodec may still report placeholders)")
                 BridgeStore.update(id){it.copy(encoderParams=params)}
                 // Observation only, once per session: ask the host what it offers and record the replies.
                 // Neither answer changes local behaviour yet - they are here to be read off a real car.
