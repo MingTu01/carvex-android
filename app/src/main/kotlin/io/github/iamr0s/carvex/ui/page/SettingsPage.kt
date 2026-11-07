@@ -89,9 +89,6 @@ fun SettingsPage(
     ) {
         ScreenTitle(stringResource(R.string.nav_settings))
 
-        // 诊断放在设置的最上面：车机上"画面糊 / 声音分不开"的时候，人是在设置里找东西的，
-        // 而这两件事的答案全是几个数字。原来只放在设备详情页，结果根本找不到。
-        SessionDiagnostics()
 
         // Local device name + switches
         Panel {
@@ -143,26 +140,9 @@ fun SettingsPage(
             // 前两个是"必须开"，第三个是这个版本的正常功能，第四个只是排查密文问题的一次性诊断。
             // 摆在这里的结果要么是用户误关后没声音没画面，要么是没人知道它干什么。
             // 对应 Options 的默认值已改为开；存量用户由 DefaultOnSettingsMigration 一次性提升。
-            // 通知使用权：车机显示歌名/歌手的数据来源。系统不允许应用自行申请，只能跳设置。
-            ListItem(
-                headlineContent = { Text(stringResource(R.string.settings_notif_access)) },
-                supportingContent = { Text(stringResource(R.string.settings_notif_access_supporting)) },
-                trailingContent = {
-                    Icon(
-                        Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                        contentDescription = null
-                    )
-                },
-                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                modifier = Modifier.clickable {
-                    runCatching {
-                        context.startActivity(
-                            Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        )
-                    }
-                },
-            )
+            // 通知使用权入口已经撤掉：它只是车机显示歌名/歌手的数据来源，属于"能开就开、
+            // 开不了也不该妨碍用"的一类，摆在设置里只会让人以为关掉它就会出问题。
+            // 权限本身照旧读取，系统设置里授予之后仍然生效。
             SwitchRow(stringResource(R.string.settings_auto_reconnect), s.autoReconnect) { v ->
                 vm.updateSettings("auto_reconnect=$v") { it.copy(autoReconnect = v) }
             }
@@ -230,23 +210,11 @@ fun SettingsPage(
             }
         }
 
-        // 音频路由：车机的音量确实是媒体/小爱/导航三路分的，但这三条声音要先落到三个不同的
-        // 流类型上才分得开。默认关 —— 它改的是已经在出声的配置。
-        SectionLabel("音频路由")
-        Panel {
-            SwitchRow("三路音频分离（实验）", s.separateAudioLanes) { v -> vm.setSeparateAudioLanes(v) }
-            Text(
-                "关：媒体占 100/media，导航占 101/default，小爱没有自己的流，只能并进导航那一条" +
-                    "（一次只有一个人说话）。" +
-                    "开：媒体和导航都不动，小爱改走 101/compatibility —— 同一个 101 下的另一个会话位，" +
-                    "三条流各占一个，车机那三个音量才真正对得上。" +
-                    "开关改动在下次连接生效；开之前请先看「会话诊断」里车机提供了几条路由 —— " +
-                    "只有两条 type 的话，怎么改都分不开。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
+        // 「三路音频分离」开关已经撤掉。它从来没有真正生效过 —— 这个接收端能发 PCM 的只有
+        // `100/media` 和 `101/default` 两条，第三条路（`101/compatibility`）SETUP 一律 400；
+        // 而每一次为第三条路发出的请求都会把车机的输入焦点拿走，导致触屏失效。
+        // 现在会话中途根本不建任何音频流（见 SessionController.requestAudio），
+        // 小爱的声音并进活着的通道里出来 —— 音量分不开，但触屏和声音都在。
 
         // 画质：车机画面糊的时候，剩下的唯一变量就是码率。档位直接乘在像素率上，
         // 所以换分辨率时码率会跟着走，不会出现"画布变大、每像素变少"的二次退化。

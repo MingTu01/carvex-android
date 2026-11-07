@@ -90,9 +90,6 @@ fun DeviceInfoPage(
 
         StatusCard(state, onClick = null, onDisconnect = vm::disconnect)
 
-        // 分辨率协商 + 三路音频的一屏体检。放在连接状态下面：这两类问题的表现都在车机上
-        // （画面糊、声音混），只有这一块能把它们落成数字。
-        SessionDiagnostics()
 
         SectionLabel(stringResource(R.string.section_connection))
         Panel {

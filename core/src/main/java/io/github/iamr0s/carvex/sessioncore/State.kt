@@ -262,7 +262,14 @@ object BridgeStore {
             p.getFloat("audioVolumeDb",default.audioVolumeDb.toFloat()).toDouble(),
             p.getBoolean("audioRawWirePt",default.audioRawWirePt),
             videoQuality=p.getInt("videoQuality",default.videoQuality).coerceIn(0,2),
-            separateAudioLanes=p.getBoolean("separateAudioLanes",default.separateAudioLanes))
+            // 「三路音频分离」已停用，不再读持久化的旧值。
+            //
+            // 它不是"效果不好"，是**这个接收端上根本不存在第三路**：能发 PCM 的只有
+            // `100/media` 与 `101/default`，`101/compatibility` 实测 SETUP 一律 400。
+            // 更关键的是每一次为它发出的请求都会把车机的输入焦点拿走 —— 触屏随之失效，
+            // 这正是 2026-11-03 修过一次、2026-11-07 又踩回来的那个坑。
+            // 协议层的参数与用例保留，留给真的广告了第三个 purpose 的接收端。
+            separateAudioLanes=false)
         scope.launch {
             val f=File(context.filesDir,"diagnostic.log")
             val saved=synchronized(logFileLock){

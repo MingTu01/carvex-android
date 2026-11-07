@@ -1271,20 +1271,28 @@ class SessionController(
                     // 所以只封中途这一条路，不封预热。详见 AudioDebugConfig.navAudio。
                     //
                     // 返回 true = 这段音频由我们接管（丢弃），调用方不会转去手机本机播放。
-                    if(category==2&&!prime&&!io.github.iamr0s.carvex.carplay.core.AudioDebugConfig.navAudio){
-                        // 预热流还活着就**直接灌进去**：格式转换（16k/1 → 48k/2）与发送都在
-                        // HostAudioBridge 里，走的是会话建立阶段就建好的那条 `101/default`。
-                        // 返回 false 让调用方落到 `audio.receive(...)`，这才是不建新 SETUP 的路径。
-                        //
-                        // 这是导航出声的正解：车机的输入焦点只有在**中途 SETUP** 时才被它拿走，
-                        // 而这里一条新流都不建。
-                        if(audio.testFormat(2)!=null)return false
-                        // 没有活着的预热流时才丢弃。导航语音的 PCM 回调很密（约 12 次/秒），
-                        // 每次打一行会把 1MB 的 diagnostic.log 冲掉，所以限流到 5 秒一行。
+                    // 结构性约束：**会话中途绝不 SETUP 任何音频流**，不分类别、不分路由。
+                    //
+                    // 2026-11-03 真车对照实验（会话 `2f8114ca`）证实：车机为一次音频 SETUP 让出
+                    // 输入焦点之后**永不归还** —— 拿走触屏的是「发起请求」这个动作本身，既不是
+                    // 哪条路由，也不是有没有真的出声（拦掉 cat2 的 SETUP 后触摸全程正常，97 条
+                    // 报告横跨导航前后；不拦的五次全部归零）。
+                    //
+                    // 当时只封了 category 2，于是 2026-11-07 又栽在 category 3 上：小爱一出声就去
+                    // 要 `101/compatibility`，车机回 400，触屏照样没了。**400 也算失守** —— 这条
+                    // 规则与结果无关，只与有没有发出那个请求有关。所以现在一律封死。
+                    //
+                    // 只有会话建立阶段的预热（prime=true）允许建流，那是实测安全的。
+                    // 中途的音频一律灌进已经活着的那条：16k/1→48k/2 的转换、以及
+                    // 3 > 2 > 1 的让路仲裁都在 HostAudioBridge 里，一条新流都不建。
+                    if(!prime){
+                        if(audio.laneAssignment()[category]!=null)return false
+                        // 连活着的通道都没有：丢弃，别让调用方转去手机本机播放。
+                        // 导航/语音的 PCM 回调很密（约 12 次/秒），无限流会冲掉 diagnostic.log。
                         val now=System.nanoTime()
                         val last=navAudioDropLogAt.get()
                         if(now-last>5_000_000_000L&&navAudioDropLogAt.compareAndSet(last,now))
-                            BridgeStore.log(id,"Audio category=2 dropped: no live prewarmed lane; a mid-session SETUP here costs the car's input focus (car-verified)")
+                            BridgeStore.log(id,"Audio category=$category dropped: no live lane to merge into, and a mid-session SETUP here costs the car's input focus (car-verified)")
                         return true
                     }
                     val ticket=if(prime)audioDemand.prime(category,pcmFormat)
@@ -1338,7 +1346,11 @@ class SessionController(
                     withTimeoutOrNull(6000){completions[category]?.await()}
                 }
                 startAudio.set{category,pcm,format->requestAudio(category,pcm,format)}
-                startSpeech.set{requestAudio(3,byteArrayOf(),PcmFormat(24000,1),prime=true)}
+                // 语音**不再尝试建流**。原来这里会为 category 3 预热一条 `101/default`（后来是
+                // `101/compatibility`），实车两次都回 400 —— 而那次请求本身就把车机的输入焦点
+                // 拿走了，触屏随之失效。小爱的声音本来就能从活着的通道里出来（HostAudioBridge
+                // 会把 cat3 并进 cat2/cat1），所以预热除了换来一个 400 什么也不给。
+                startSpeech.set(null)
                 BridgeStore.update(id){it.copy(audioStatus="音频通道 ${audio.categories().sorted()} 已建立 · 发声待实测")}
             }
             // A receiver may legitimately expose only audio/control. In that mode no video
@@ -1418,8 +1430,16 @@ class SessionController(
             try{
                 BridgeStore.update(id){it.copy(carPlayAudioTestRunning=true,carPlayAudioTestStatus="正在建立独立 CarPlay 测试音")}
                 val bridge=audioBridge
+                // 只往活着的媒体通道里发。原来这里在没有活通道时会**新建一条** —— 那是一条
+                // 会话中途的 SETUP，会拿走车机的输入焦点（触屏失效，已由真车对照实验证实），
+                // 而它只是为了一段测试音，代价完全不成比例。没有通道就如实拒绝。
                 val existing=bridge?.testFormat(1)
-                val format=existing?:run{direct=air.createAudio(1,PcmFormat(48000,2),null);requireNotNull(direct).formats.getValue(1)}
+                if(existing==null){
+                    BridgeStore.log(id,"CarPlay audio test rejected: no live media lane; a mid-session SETUP here costs the car's input focus")
+                    BridgeStore.update(id){it.copy(carPlayAudioTestStatus="没有活着的媒体通道，测试音取消")}
+                    return@launch
+                }
+                val format=existing
                 val frames=(format.rate/50).coerceAtLeast(1);var sample=0L
                 BridgeStore.log(id,"CarPlay audio test begin route="+(if(existing!=null)"active-media"else "independent-media")+"${" PCM="}${format.rate}${"/"}${format.channels}${" left=440Hz right=660Hz"}")
                 BridgeStore.update(id){it.copy(carPlayAudioTestStatus="发送左右声道测试音 6 秒 · 左 440 Hz / 右 660 Hz")}
